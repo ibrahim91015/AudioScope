@@ -33,7 +33,7 @@ public class ScopeApp extends Application {
     public static android.content.SharedPreferences prefs(){return app.getSharedPreferences("settings",0);}
     public static synchronized void log(String level,String message){
         String s=new SimpleDateFormat("HH:mm:ss.SSS",Locale.US).format(new Date())+"  "+level+"  "+message;logs.add(s);while(logs.size()>1500)logs.remove();android.util.Log.i("AudioScope",s);
-        if(app!=null)try(FileWriter w=new FileWriter(new File(app.getFilesDir(),"events.log"),true)){w.write(s+"\n");}catch(IOException ignored){}
+        if(app!=null){File file=new File(app.getFilesDir(),"events.log");if(file.length()>2*1024*1024){File old=new File(app.getFilesDir(),"events.previous.log");old.delete();file.renameTo(old);}try(FileWriter w=new FileWriter(file,true)){w.write(s+"\n");}catch(IOException ignored){}}
     }
     public static synchronized String logText(String filter){StringBuilder b=new StringBuilder();for(String s:logs)if(filter.isEmpty()||s.toLowerCase(Locale.US).contains(filter.toLowerCase(Locale.US)))b.append(s).append('\n');return b.toString();}
 }

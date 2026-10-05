@@ -1,0 +1,22 @@
+AudioScope 0.1.0 — modified version, 2026-10-05.
+Package dev.audioscope; independent name, icon and interface.
+
+This software is a fork / edited derivative of ShizuCallRecorder and CallVault.
+https://github.com/kitsumed/ShizuCallRecorder
+https://github.com/madkongo/CallVault
+
+Playback AudioPolicy reflection, on-device ADB identity persistence and
+detached Binder delivery were adapted from CallVault, upstream source commit
+8ef410766e05f5b0eec3d83da4cbd3faf29728de, copyright The CallVault Authors.
+Original attribution and the upstream Section 7 terms are retained in LICENSE
+and displayed in the application Settings/About section.
+
+AudioScope modifications: Material 3 UI, selectable accents, manual capture
+catalog, live monitoring and waveform rows, recording controls, timestamped PCM
+pipes, signal health, per-source formats, WAV/routing/Matroska exports and labs.
+
+Dependencies are not relicensed by this notice: Material Components and Shizuku
+(Apache 2.0), libadb-android (GPL-3.0-or-later OR Apache 2.0; chosen Apache 2.0), Conscrypt (Apache 2.0), Bouncy Castle
+(MIT-style license). Their respective upstream notices and binary metadata apply.
+
+GPL-3.0-or-later, with upstream additional terms in LICENSE. No warranty.

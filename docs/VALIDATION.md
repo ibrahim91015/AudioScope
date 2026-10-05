@@ -7,7 +7,7 @@ This is an experimental Android build, verified on an Android 13 x86_64 emulator
 - Five JUnit audio-pipeline tests: silent-buffer/clipping health, WAV header repair, delayed stereo alignment/channel separation, gain/mute mix behavior and separate named Matroska tracks.
 - Android lint: zero errors. Remaining warnings concern intentionally used hidden AudioPolicy/Binder APIs, the runtime-gated shell provider, dependency versions and the paired ADB library's TLS implementation.
 - Debug and privately signed release builds. Release APK verified with APK Signature Scheme v2 and an RSA-3072 key; package dev.audioscope, version 0.1.0, minimum API 33, target API 35, and no debuggable manifest flag. APK SHA-256: `82c8ca7d72233905aaf1a6afdcb54a076877743b33798a079b258ddc07c54c74`.
-- A Gradle wrapper distribution checksum is pinned. A GitHub Actions build/test/lint workflow is supplied; it has not run remotely because the repository is not yet published.
+- A Gradle wrapper distribution checksum is pinned. A GitHub Actions build/test/lint workflow is supplied. The first remote run failed in Android SDK setup; the workflow now uses the runner’s preinstalled SDK on Ubuntu 24.04. The amended remote run is pending publication.
 
 ## Emulator checks
 
@@ -38,4 +38,4 @@ The catalog exposes all public [MediaRecorder.AudioSource constants](https://dev
 
 ## Local publication status
 
-Local Git versioning is active. Git Credential Manager is configured for Windows Credential Manager, but this Codex process cannot read that credential store. The connected GitHub connector identifies another account, so it was not used to publish. Run `Publish-GitHub.ps1` from a normal terminal to publish through the intended `ibrahim91015` account; the script verifies the actual GitHub account before creating or pushing anything.
+The public repository https://github.com/ibrahim91015/AudioScope and v0.1.0 tag were published through local Git. Initial release creation failed because Windows PowerShell sent a non-ASCII JSON title using the wrong encoding. The publisher now sends explicit UTF-8 request bytes and has passed a Windows PowerShell 5.1 HTTP round-trip test. Rerun Publish-GitHub.ps1 to push these tooling corrections and complete release uploads. This Codex process still cannot read the local Windows Credential Manager store; credentials remain on the local computer.

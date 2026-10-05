@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$RepositoryName = 'AudioScope',
     [string]$Apk = (Join-Path $PSScriptRoot '../AudioScope-0.1.0.apk'),
     [string]$SourceZip = (Join-Path $PSScriptRoot '../AudioScope-0.1.0-source.zip')
@@ -26,7 +26,7 @@ try {
     catch {
         if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
         $body = @{ name=$RepositoryName; description='Offline Android multitrack audio capture console with live sources and Material 3 controls'; private=$false; auto_init=$false } | ConvertTo-Json
-        $repo = Invoke-RestMethod 'https://api.github.com/user/repos' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+        $repo = Invoke-RestMethod 'https://api.github.com/user/repos' -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     if ($repo.private) { throw 'Existing repository is private. No visibility change or push was made.' }
     $origin = $null
@@ -40,13 +40,14 @@ try {
     try { $release = Invoke-RestMethod "$api/releases/tags/v0.1.0" -Headers $headers }
     catch {
         if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
-        $body = @{ tag_name='v0.1.0'; name='AudioScope 0.1.0 — experimental Android build'; prerelease=$true; body='Dark purple Material 3 controls, live Sources metering, per-source formats, independent tracks, offline daemon support and diagnostics. Emulator tests passed; Samsung carrier/Teams/Wi-Fi Calling and embedded pairing still require physical-device validation. See README and docs/VALIDATION.md.' } | ConvertTo-Json
-        $release = Invoke-RestMethod "$api/releases" -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+        $body = @{ tag_name='v0.1.0'; name='AudioScope 0.1.0 - experimental Android build'; prerelease=$true; body='Dark purple Material 3 controls, live Sources metering, per-source formats, independent tracks, offline daemon support and diagnostics. Emulator tests passed; Samsung carrier/Teams/Wi-Fi Calling and embedded pairing still require physical-device validation. See README and docs/VALIDATION.md.' } | ConvertTo-Json
+        $release = Invoke-RestMethod "$api/releases" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     foreach ($path in @($Apk,$SourceZip)) {
         $file = Get-Item -LiteralPath $path
         if ($release.assets.name -contains $file.Name) { Write-Host "Already uploaded: $($file.Name)"; continue }
         $upload = ($release.upload_url -split '\{')[0] + '?name=' + [Uri]::EscapeDataString($file.Name)
+        Write-Host "Uploading: $($file.Name)"
         Invoke-RestMethod $upload -Method Post -Headers $headers -ContentType 'application/octet-stream' -InFile $file.FullName > $null
     }
     Write-Host "Published: $($release.html_url)"

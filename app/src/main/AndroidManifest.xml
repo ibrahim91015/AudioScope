@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
+    <queries><package android:name="moe.shizuku.privileged.api"/><package android:name="com.hamondev.shevery"/></queries>
+    <application android:name=".ScopeApp" android:label="AudioScope" android:icon="@drawable/ic_scope" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+        <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="microphone|mediaProjection"/>
+        <provider android:name=".BridgeProvider" android:authorities="dev.audioscope.bridge" android:exported="true"/>
+        <provider android:name=".ShareProvider" android:authorities="dev.audioscope.files" android:exported="false" android:grantUriPermissions="true"/>
+        <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="dev.audioscope.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+        <meta-data android:name="moe.shizuku.client.V3_SUPPORT" android:value="true"/>
+    </application>
+</manifest>

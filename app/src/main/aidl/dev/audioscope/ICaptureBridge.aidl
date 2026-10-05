@@ -9,4 +9,5 @@ interface ICaptureBridge {
     void shutdown();
     void destroy();
     int apiVersion();
+    String systemSetup(String action, String value);
 }

@@ -1,4 +1,4 @@
-AudioScope 0.2.0 — modified version, 2026-10-05.
+AudioScope 0.4.0 — modified version, 2026-10-05.
 Package dev.audioscope; independent name, icon and interface.
 
 This software is a fork / edited derivative of ShizuCallRecorder and CallVault.
@@ -31,3 +31,10 @@ recording detail, indicator/motion fixes and optional call-aware file naming.
 The storage and naming designs were compared with CallVault SafHelper,
 RecordingFileNameFormatter and VoipCallerName; the new Java implementations
 are independently written. Upstream capture/license attribution remains above.
+
+Version 0.4 reorganizes Settings, separates switch explanations, and adds verified
+USB/debugging controls, default USB configuration, current-boot offline restart,
+an optional wireless guard, reboot reminders and a source-based comparison.
+Advanced behavior and explanatory text were adapted after reviewing CallVault's
+SettingsScreen, OfflineRecording and UsbDefaultConfig at the commit above.
+The Java command bridge, guard and reminders are independently implemented.

@@ -42,6 +42,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   private Button record, pause;
   private EditText logFilter;
   private int tab = 0, lastMode = -1;
+  private String settingsPage = "home";
+  private volatile boolean readingDebugging;
   private String[] pendingSources;
   private boolean pendingRecordAll;
   private final LinkedHashSet<String> selected = new LinkedHashSet<>();
@@ -57,7 +59,24 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   public void onCreate(Bundle saved) {
     super.onCreate(saved);
-    if (saved != null) tab = saved.getInt("tab", 0);
+    getOnBackPressedDispatcher()
+        .addCallback(
+            this,
+            new androidx.activity.OnBackPressedCallback(true) {
+              public void handleOnBackPressed() {
+                if (tab == 4 && !settingsPage.equals("home")) {
+                  settingsPage = "home";
+                  render();
+                } else {
+                  setEnabled(false);
+                  getOnBackPressedDispatcher().onBackPressed();
+                }
+              }
+            });
+    if (saved != null) {
+      tab = saved.getInt("tab", 0);
+      settingsPage = saved.getString("settingsPage", "home");
+    }
     selected.addAll(
         ScopeApp.prefs()
             .getStringSet("selected", new LinkedHashSet<>(Arrays.asList("mic", "voice_playback"))));
@@ -97,13 +116,17 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   protected void onSaveInstanceState(Bundle b) {
     super.onSaveInstanceState(b);
     b.putInt("tab", tab);
+    b.putString("settingsPage", settingsPage);
   }
 
   public void onResume() {
     super.onResume();
     foreground = true;
     ScopeApp.app.ensureCallObserver();
-    if (tab == 4) render();
+    if (tab == 4) {
+      render();
+      refreshDebugging();
+    }
     if (tab == 5) enableMeters();
     handler.post(update);
   }
@@ -154,11 +177,18 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   }
 
   private LinearLayout card() {
-    return Ui.card(this);
+    LinearLayout result = Ui.card(this);
+    if (tab == 4) result.setPadding(dp(16), dp(14), dp(16), dp(14));
+    return result;
   }
 
   private Button button(String label, int color, Runnable action) {
-    return Ui.button(this, label, color == ACCENT, action);
+    Button result = Ui.button(this, label, color == ACCENT, action);
+    if (tab == 4) {
+      result.setMinHeight(dp(48));
+      result.setMinimumHeight(dp(48));
+    }
+    return result;
   }
 
   private void two(LinearLayout parent, Button a, Button b) {
@@ -225,6 +255,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     engine.setOnClickListener(
         v -> {
           tab = 4;
+          settingsPage = "connection";
+          refreshDebugging();
           render();
         });
     root.addView(engine);
@@ -264,7 +296,9 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     bottom.setSelectedItemId(100 + (tab == 2 ? 3 : tab));
     bottom.setOnItemSelectedListener(
         item -> {
-          tab = item.getItemId() - 100;
+          int next = item.getItemId() - 100;
+          if (next == 4) settingsPage = "home";
+          tab = next;
           render();
           return true;
         });
@@ -1253,627 +1287,1136 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     }
   }
 
-  private void jumpSetting(String heading) {
-    for (int i = 0; i < body.getChildCount(); i++) {
-      View child = body.getChildAt(i);
-      if (child instanceof TextView && heading.contentEquals(((TextView) child).getText())) {
-        ((ScrollView) body.getParent()).smoothScrollTo(0, child.getTop());
-        return;
+  private void settings() {
+    if (settingsPage.equals("home")) {
+      settingsHome();
+      return;
+    }
+    body.addView(
+        button(
+            "‹ All settings",
+            CARD,
+            () -> {
+              settingsPage = "home";
+              render();
+            }));
+    if (!settingsPage.equals("reliability")) body.addView(title(settingsTitle()));
+    if (settingsPage.equals("reliability")) reliabilitySettings();
+    if (settingsPage.equals("appearance")) {
+      LinearLayout appearance = card();
+      appearance.addView(text("Dark Material You", 18, INK));
+      appearance.addView(
+          text("Choose an accent, including Android’s wallpaper palette.", 14, MUTED));
+      String current = ScopeApp.prefs().getString("accent", "Purple");
+      int colorIndex = Arrays.asList(ThemePalette.NAMES).indexOf(current);
+      Spinner colors = spinner(ThemePalette.NAMES, Math.max(0, colorIndex));
+      colors.setOnItemSelectedListener(
+          listener(
+              index -> {
+                String chosen = ThemePalette.NAMES[index];
+                if (!chosen.equals(ScopeApp.prefs().getString("accent", "Purple"))) {
+                  ScopeApp.prefs().edit().putString("accent", chosen).apply();
+                  handler.post(this::render);
+                }
+              }));
+      appearance.addView(colors);
+      appearance.addView(text("App text size", 14, INK));
+      String[] sizes = {"Small · 85%", "Standard · 100%", "Large · 115%"};
+      float[] scales = {.85f, 1f, 1.15f};
+      float scale = ScopeApp.prefs().getFloat("uiTextScale", 1f);
+      int sizeIndex = scale < .95f ? 0 : scale > 1.05f ? 2 : 1;
+      Spinner textSize = spinner(sizes, sizeIndex);
+      textSize.setOnItemSelectedListener(
+          listener(
+              i -> {
+                if (scales[i] != ScopeApp.prefs().getFloat("uiTextScale", 1f)) {
+                  ScopeApp.prefs().edit().putFloat("uiTextScale", scales[i]).apply();
+                  handler.post(this::render);
+                }
+              }));
+      appearance.addView(textSize);
+      toggle(
+          appearance,
+          "Smooth interface animations",
+          "Short transitions and button feedback; Android's reduced-motion setting is respected.",
+          "animations",
+          true);
+      toggle(
+          appearance,
+          "Smooth live waveforms",
+          "Interpolate real measured peaks between audio updates. The saved audio is unchanged.",
+          "smoothWaveforms",
+          true);
+
+      body.addView(appearance);
+    }
+    if (settingsPage.equals("naming")) {
+      section("AUTOMATIC FILE NAMING");
+      LinearLayout naming = card();
+      toggle(
+          naming,
+          "Name recordings from call details",
+          "Use available caller, app, and direction; missing information is omitted. Optional"
+              + " access below stays on this phone.",
+          "autoNaming",
+          true);
+      naming.addView(
+          text(
+              "Phone names: "
+                  + (CallContext.allowed(Manifest.permission.READ_CALL_LOG)
+                      ? "call log allowed"
+                      : "call-log access off")
+                  + " · "
+                  + (CallContext.allowed(Manifest.permission.READ_CONTACTS)
+                      ? "contacts allowed"
+                      : "contacts off"),
+              13,
+              MUTED));
+      naming.addView(
+          button(
+              "Allow phone caller names & direction",
+              CARD,
+              () ->
+                  requestPermissions(
+                      new String[] {
+                        Manifest.permission.READ_CALL_LOG,
+                        Manifest.permission.READ_CONTACTS,
+                        Manifest.permission.READ_PHONE_STATE
+                      },
+                      36)));
+      naming.addView(
+          text(
+              "VoIP caller names: "
+                  + (CallContext.notificationAccess()
+                      ? "notification access allowed"
+                      : "notification access off")
+                  + ". Only ongoing call notifications are used. An app that hides caller or"
+                  + " direction keeps those fields empty.",
+              13,
+              MUTED));
+      naming.addView(
+          button(
+              "Set up VoIP call naming",
+              CARD,
+              () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
+      naming.addView(
+          text(
+              "Example: date_WhatsApp_in_Alex_VoIP playback_0.m4a. Direction appears only when"
+                  + " exposed by Android.",
+              13,
+              MUTED));
+      naming.addView(
+          button(
+              "Edit filename template",
+              CARD,
+              () -> {
+                EditText template =
+                    input(
+                        "{date}_{app}_{direction}_{contact}_{source}",
+                        ScopeApp.prefs()
+                            .getString(
+                                "namingTemplate", "{date}_{app}_{direction}_{contact}_{source}"),
+                        false);
+                new AlertDialog.Builder(this)
+                    .setTitle("Filename template")
+                    .setMessage(
+                        "Fields: {date}, {app}, {direction}, {contact}, {number}, {label},"
+                            + " {source}. Empty fields disappear. Date and a track index keep names"
+                            + " unique.")
+                    .setView(template)
+                    .setPositiveButton(
+                        "Save",
+                        (d, w) -> {
+                          String value = template.getText().toString().trim();
+                          if (!value.isEmpty())
+                            ScopeApp.prefs().edit().putString("namingTemplate", value).apply();
+                        })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+              }));
+      body.addView(naming);
+    }
+    if (settingsPage.equals("recording")) {
+      section("RECORDING DEFAULTS");
+      LinearLayout capture = card();
+      capture.addView(text("Default audio format", 17, INK));
+      capture.addView(
+          text(
+              "Changing this updates every source’s format selector. You can then override"
+                  + " individual sources.",
+              14,
+              MUTED));
+      Spinner format =
+          spinner(Formats.LABELS, Formats.index(ScopeApp.prefs().getString("codec", "WAV")));
+      format.setEnabled(!CaptureService.active());
+      format.setOnItemSelectedListener(
+          listener(
+              i -> {
+                String value = Formats.VALUES[i];
+                if (!value.equals(ScopeApp.prefs().getString("codec", "WAV"))) {
+                  Formats.setDefault(value);
+                  Notices.event(
+                      "Default format changed",
+                      Formats.label(value) + " now applies to every source for new recordings.",
+                      "settings");
+                  toast("All source formats updated to " + Formats.label(value));
+                }
+              }));
+      capture.addView(format);
+      capture.addView(
+          button(
+              "Apply default to every source",
+              CARD,
+              () -> {
+                if (settingsEditable()) {
+                  Formats.setDefault(ScopeApp.prefs().getString("codec", "WAV"));
+                  toast("Every source now uses the default format");
+                }
+              }));
+      capture.addView(
+          text(
+              "M4A saves space. WAV is uncompressed. Opus uses WebM. PCM is headerless; private WAV"
+                  + " originals are kept for recovery and waveform playback.",
+              13,
+              MUTED));
+      toggle(
+          capture,
+          "Save copies visible in Files",
+          "Finished audio appears in your selected folder and Files / Recent. Default raw PCM goes"
+              + " in Downloads/AudioScope.",
+          "publicFiles",
+          true);
+      choice(
+          capture,
+          "Sample rate",
+          new String[] {"16,000 Hz", "24,000 Hz", "44,100 Hz", "48,000 Hz"},
+          "rate",
+          new int[] {16000, 24000, 44100, 48000},
+          48000);
+      capture.addView(
+          text(
+              "48 kHz keeps more detail; 16 kHz is enough for speech and reduces raw file size."
+                  + " Some protected routes support only certain rates.",
+              14,
+              MUTED));
+      choice(
+          capture,
+          "Capture channels",
+          new String[] {"Mono", "Stereo"},
+          "channels",
+          new int[] {1, 2},
+          1);
+      capture.addView(
+          text(
+              "Mono saves space. Stereo asks Android for two channels; it does not guarantee that"
+                  + " each caller gets a separate channel. Use output routing for explicit"
+                  + " left/right source assignment.",
+              14,
+              MUTED));
+      choice(
+          capture,
+          "Encoded bitrate",
+          new String[] {"64 kbps", "128 kbps", "192 kbps", "256 kbps"},
+          "bitrate",
+          new int[] {64000, 128000, 192000, 256000},
+          128000);
+      capture.addView(
+          text(
+              "Bitrate controls M4A and Opus export size and quality. It does not compress WAV or"
+                  + " PCM. AudioScope currently keeps a private WAV original even when you choose a"
+                  + " smaller export.",
+              14,
+              MUTED));
+      numberSetting(capture, "Session limit in minutes · 0 = unlimited", "maxMinutes", 0, 0, 720);
+      toggle(
+          capture,
+          "Keep CPU awake while recording",
+          "Helps background capture continue while the screen is off.",
+          "wakelock",
+          true);
+      body.addView(capture);
+    }
+    if (settingsPage.equals("storage")) {
+      section("SAVE LOCATION");
+      LinearLayout storage = card();
+      storage.addView(text("Save folder · " + StorageFolders.label(), 16, INK));
+      storage.addView(
+          text(
+              "Choose a local folder or SD card for finished audio. Files / Recent indexing is"
+                  + " requested after saving. Cloud folders use their provider's Recent list."
+                  + " Originals remain safe in Sessions.",
+              14,
+              MUTED));
+      storage.addView(
+          button(
+              "Choose save folder",
+              CARD,
+              () -> {
+                if (!settingsEditable()) return;
+                Intent picker =
+                    new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                        .addFlags(
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                String savedTree = ScopeApp.prefs().getString("saveTree", "");
+                if (!savedTree.isEmpty())
+                  picker.putExtra(
+                      android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(savedTree));
+                startActivityForResult(picker, 40);
+              }));
+      storage.addView(
+          button(
+              "Use default Recordings/AudioScope",
+              CARD,
+              () -> {
+                if (settingsEditable()) {
+                  StorageFolders.reset();
+                  render();
+                }
+              }));
+      toggle(
+          storage,
+          "Copy session metadata",
+          "Write a JSON sidecar in custom folders with source names, format, timing, bookmarks,"
+              + " routing and errors.",
+          "publicMetadata",
+          true);
+      body.addView(storage);
+    }
+    if (settingsPage.equals("bluetooth")) {
+      section("BLUETOOTH & MICROPHONES");
+      LinearLayout bt = card();
+      bt.addView(text("Ordinary microphones use the phone", 16, INK));
+      bt.addView(
+          text(
+              "Phone input is explicitly selected and the actual route is checked. Headset sources"
+                  + " appear only while connected and never monitor automatically. Bluetooth mic"
+                  + " use may switch CMF earbuds to call audio and interrupt YouTube or music.",
+              14,
+              MUTED));
+      bt.addView(text(BluetoothRouting.description(), 14, ACCENT));
+      bt.addView(
+          button(
+              "Allow Nearby devices",
+              CARD,
+              () -> requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT}, 35)));
+      bt.addView(
+          button(
+              "Open Android Bluetooth settings",
+              CARD,
+              () -> startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS))));
+      List<AudioDeviceInfo> inputs = BluetoothRouting.connected();
+      if (!inputs.isEmpty()) {
+        String[] devices = new String[inputs.size()];
+        int selectedInput = 0;
+        for (int i = 0; i < inputs.size(); i++) {
+          devices[i] = inputs.get(i).getProductName().toString();
+          if (inputs.get(i).getId() == ScopeApp.prefs().getInt("bluetoothInput", -1)
+              || !inputs.get(i).getAddress().isEmpty()
+                  && inputs
+                      .get(i)
+                      .getAddress()
+                      .equals(ScopeApp.prefs().getString("bluetoothInputAddress", "")))
+            selectedInput = i;
+        }
+        bt.addView(text("Preferred headset microphone", 14, INK));
+        Spinner devicesPicker = spinner(devices, selectedInput);
+        devicesPicker.setEnabled(!CaptureService.active() && !BluetoothRouting.busy());
+        devicesPicker.setOnItemSelectedListener(
+            listener(
+                i ->
+                    ScopeApp.prefs()
+                        .edit()
+                        .putInt("bluetoothInput", inputs.get(i).getId())
+                        .putString("bluetoothInputAddress", inputs.get(i).getAddress())
+                        .apply()));
+        bt.addView(devicesPicker);
       }
+      toggle(
+          bt,
+          "Monitor phone microphones",
+          "Turn off phone mic previews if your phone still changes media routing. Recording buttons"
+              + " continue to work.",
+          "phoneMicPreview",
+          true);
+      toggle(
+          bt,
+          "Prepare headset call audio",
+          "Only explicit Bluetooth source actions request communication audio. Turn off to use a"
+              + " route already established by a call app.",
+          "bluetoothCommunication",
+          true);
+      choice(
+          bt,
+          "Bluetooth mic sample rate · Mono",
+          new String[] {"16,000 Hz speech", "24,000 Hz", "48,000 Hz"},
+          "bluetoothRate",
+          new int[] {16000, 24000, 48000},
+          16000);
+      bt.addView(
+          button(
+              "Release AudioScope's idle Bluetooth route",
+              CARD,
+              () -> {
+                if (BluetoothRouting.busy()) {
+                  showText(
+                      "Bluetooth source still active",
+                      "Stop Bluetooth recording and monitoring before releasing the route.");
+                  return;
+                }
+                try {
+                  BluetoothRouting.resetIdleRoute();
+                  Notices.event(
+                      "Idle headset route released",
+                      "AudioScope released its communication route. If media remains silent, pause"
+                          + " and resume playback or reconnect the headset.",
+                      "settings");
+                } catch (Exception e) {
+                  Notices.error("Headset route needs attention", ShellBridge.root(e), "settings");
+                }
+              }));
+      body.addView(bt);
+    }
+    if (settingsPage.equals("automation")) {
+      section("CALL AUTOMATION");
+      LinearLayout automation = card();
+      automation.addView(text("Automatic phone and app calls", 17, INK));
+      automation.addView(
+          text(
+              "Arm from this screen or Record while AudioScope is open. The persistent notification"
+                  + " lets you disarm. Re-arm after reboot or if Android stops the app.",
+              14,
+              MUTED));
+      automation.addView(
+          button(
+              CaptureService.armed ? "Disarm automatic calls" : "Arm automatic calls",
+              ACCENT,
+              () -> setup(CaptureService.armed ? "DISARM_AUTO" : "ARM_AUTO")));
+      automation.addView(
+          button(
+              "Allow phone-call detection",
+              CARD,
+              () -> requestPermissions(new String[] {Manifest.permission.READ_PHONE_STATE}, 23)));
+      automation.addView(
+          text(
+              "Phone-state permission improves carrier detection. VoIP / Wi-Fi calls also use"
+                  + " communication audio state and record VoIP playback + mic rather than assuming"
+                  + " a carrier route works.",
+              13,
+              MUTED));
+      body.addView(automation);
+    }
+    if (settingsPage.equals("connection")) {
+      section("OFFLINE CAPTURE HELPER");
+      LinearLayout adb = card();
+      adb.addView(text("Embedded ADB", 18, INK));
+      adb.addView(
+          text(
+              "1. Open Wireless debugging below and enable it.\n"
+                  + "2. Choose Pair device with pairing code.\n"
+                  + "3. Stay in Settings. Pull down notifications, tap Enter code, and send the six"
+                  + " digits.\n"
+                  + "AudioScope discovers both ports and starts the helper automatically.",
+              14,
+              MUTED));
+      adb.addView(button("Pair in Wireless debugging", ACCENT, () -> setup("PAIR")));
+      adb.addView(button("Connect paired phone", CARD, () -> setup("CONNECT")));
+      adb.addView(
+          text(
+              "Once connected, capture continues offline without Wi-Fi. Android changes the"
+                  + " connection port; Connect paired phone discovers it again.",
+              13,
+              MUTED));
+      body.addView(adb);
+      LinearLayout helper = card();
+      helper.addView(text("Shevery / Shizuku", 18, INK));
+      helper.addView(
+          text(
+              "Start the manager’s service first. Connect requests its Binder and then asks you to"
+                  + " authorize AudioScope.",
+              14,
+              MUTED));
+      helper.addView(
+          button(
+              "Connect Shevery / Shizuku",
+              ACCENT,
+              () -> {
+                if (settingsEditable()) {
+                  monitors.disable();
+                  ScopeApp.app.connectShizuku();
+                }
+              }));
+      helper.addView(
+          button(
+              "Open helper manager",
+              CARD,
+              () -> {
+                Intent i = getPackageManager().getLaunchIntentForPackage("com.hamondev.shevery");
+                if (i == null)
+                  i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (i != null) startActivity(i);
+                else
+                  showText(
+                      "Helper manager not installed",
+                      "Install and start Shevery or Shizuku, or use Embedded ADB above.");
+              }));
+      body.addView(helper);
+    }
+    if (settingsPage.equals("notifications")) {
+      section("NOTIFICATIONS");
+      LinearLayout notifications = card();
+      notifications.addView(
+          button(
+              "Enable / manage Android notifications",
+              CARD,
+              () -> {
+                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED)
+                  requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 25);
+                else
+                  startActivity(
+                      new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                          .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+              }));
+      toggle(
+          notifications,
+          "Recording and setup updates",
+          "Started, paused, resumed, bookmarks, saved files, helper status, and automation."
+              + " Recording controls and repair notifications have their own channels.",
+          "eventNotifications",
+          true);
+      notifications.addView(button("Notification history", CARD, this::notificationHistory));
+      notifications.addView(
+          button(
+              "Send a test notification",
+              CARD,
+              () ->
+                  Notices.event(
+                      "AudioScope notifications are working",
+                      "Tap Details to open this message. Recording notifications include pause,"
+                          + " bookmark, and stop controls.",
+                      "settings")));
+      body.addView(notifications);
+    }
+    if (settingsPage.equals("advanced")) {
+      section("MANUAL CONNECTION");
+      LinearLayout content = card();
+      content.addView(text("Manual ports · fallback when automatic discovery fails", 16, INK));
+      EditText pairPort = input("Pairing port", "", true),
+          code = input("Six-digit pairing code", "", true),
+          connectPort = input("Connection port", ScopeApp.prefs().getString("adbPort", ""), true);
+      content.addView(pairPort);
+      content.addView(code);
+      content.addView(
+          button(
+              "Pair using manual port",
+              CARD,
+              () -> {
+                try {
+                  EmbeddedAdb.pairDevice(
+                      Integer.parseInt(pairPort.getText().toString()), code.getText().toString());
+                  code.setText("");
+                } catch (Exception e) {
+                  toast("Enter Android’s current pairing port");
+                }
+              }));
+      content.addView(connectPort);
+      content.addView(
+          button(
+              "Connect using manual port",
+              CARD,
+              () -> {
+                if (!settingsEditable()) return;
+                try {
+                  EmbeddedAdb.launch(Integer.parseInt(connectPort.getText().toString()));
+                } catch (Exception e) {
+                  toast("Enter Android’s current connection port");
+                }
+              }));
+      content.addView(
+          button("Open Wireless debugging", CARD, () -> PairingService.openWireless(this)));
+      body.addView(content);
+      section("HELPER & PLAYBACK ROUTES");
+      content = card();
+      content.addView(
+          button(
+              "Arm Wi-Fi / VoIP playback before a call",
+              CARD,
+              () -> arm(Source.get("voice_playback"))));
+      content.addView(
+          button(
+              "Disarm playback policies",
+              CARD,
+              () -> {
+                if (settingsEditable())
+                  ScopeApp.IO.execute(
+                      () -> {
+                        try {
+                          if (ScopeApp.bridge != null) ScopeApp.bridge.disarm();
+                          Notices.event(
+                              "Playback policies released",
+                              "Routes will be registered again when needed.",
+                              "settings");
+                        } catch (Exception e) {
+                          ScopeApp.log("ERROR", e.toString());
+                        }
+                      });
+              }));
+      content.addView(
+          button(
+              "Stop shell helper",
+              CARD,
+              () -> {
+                if (settingsEditable())
+                  ScopeApp.IO.execute(
+                      () -> {
+                        try {
+                          if (ScopeApp.bridge != null) ScopeApp.bridge.shutdown();
+                        } catch (Exception ignored) {
+                        }
+                        ScopeApp.bridge = null;
+                        ScopeApp.backend = "Not connected";
+                      });
+              }));
+      body.addView(content);
+      section("SIGNAL & OUTPUTS");
+      content = card();
+      toggle(content, "Save raw PCM too", "Headerless PCM16 with timing sidecars.", "raw", false);
+      numberSetting(content, "Playback app UID · −1 = all apps", "uidFilter", -1, -1, 999999);
+      content.addView(
+          text(
+              "This is a playback capture filter, not automatic app detection. An Android UID can"
+                  + " belong to more than one package. It does not filter phone microphone input.",
+              14,
+              MUTED));
+      content.addView(button("Choose playback app…", CARD, this::choosePlaybackApp));
+      numberSetting(content, "Silence threshold · dBFS", "silenceDb", -60, -120, -10);
+      content.addView(
+          text(
+              "Levels below this are treated as quiet. More negative values accept quieter signals."
+                  + " This affects suggestions and silence fallback, not the volume of saved"
+                  + " audio.",
+              14,
+              MUTED));
+      numberSetting(content, "Silence grace · seconds", "silenceSeconds", 5, 1, 60);
+      content.addView(
+          text(
+              "Wait this long before trying extra routes when a carrier track stays silent. Brief"
+                  + " pauses in conversation should not trigger unnecessary sources.",
+              14,
+              MUTED));
+      toggle(
+          content,
+          "Signal-aware carrier fallback",
+          "If carrier capture stays silent, also try separated call tracks and VoIP playback +"
+              + " mic.",
+          "fallback",
+          false);
+      content.addView(
+          button(
+              "Output routing & mix controls",
+              CARD,
+              () -> {
+                tab = 2;
+                render();
+              }));
+      body.addView(content);
+    }
+    if (settingsPage.equals("about")) {
+      section("ABOUT");
+      LinearLayout about = card();
+      about.addView(text("AudioScope " + BuildConfig.VERSION_NAME, 17, INK));
+      about.addView(
+          text(
+              "Local audio capture and processing. No account, analytics, uploads, or cloud"
+                  + " processing. GPLv3-or-later with upstream Section 7 terms; see the source"
+                  + " repository for attribution and license.",
+              14,
+              MUTED));
+      about.addView(
+          button(
+              "AudioScope source",
+              CARD,
+              () -> openUrl("https://github.com/ibrahim91015/AudioScope")));
+      about.addView(
+          button(
+              "CallVault reference", CARD, () -> openUrl("https://github.com/madkongo/CallVault")));
+      about.addView(
+          button("Shevery", CARD, () -> openUrl("https://github.com/HmnDev-Tech/shevery")));
+      body.addView(about);
     }
   }
 
-  private void settings() {
+  private void settingsHome() {
     body.addView(title("Settings"));
-    body.addView(
-        text("Appearance, recording defaults, connections, and notifications.", 14, MUTED));
-    two(
-        body,
-        button("Save folder", CARD, () -> jumpSetting("SAVE LOCATION")),
-        button("Bluetooth", CARD, () -> jumpSetting("BLUETOOTH & MICROPHONES")));
-    section("APPEARANCE");
-    LinearLayout appearance = card();
-    appearance.addView(text("Dark Material You", 18, INK));
-    appearance.addView(text("Choose an accent, including Android’s wallpaper palette.", 14, MUTED));
-    String current = ScopeApp.prefs().getString("accent", "Purple");
-    int colorIndex = Arrays.asList(ThemePalette.NAMES).indexOf(current);
-    Spinner colors = spinner(ThemePalette.NAMES, Math.max(0, colorIndex));
-    colors.setOnItemSelectedListener(
-        listener(
-            index -> {
-              String chosen = ThemePalette.NAMES[index];
-              if (!chosen.equals(ScopeApp.prefs().getString("accent", "Purple"))) {
-                ScopeApp.prefs().edit().putString("accent", chosen).apply();
-                handler.post(this::render);
-              }
-            }));
-    appearance.addView(colors);
-    appearance.addView(text("App text size", 14, INK));
-    String[] sizes = {"Small · 85%", "Standard · 100%", "Large · 115%"};
-    float[] scales = {.85f, 1f, 1.15f};
-    float scale = ScopeApp.prefs().getFloat("uiTextScale", 1f);
-    int sizeIndex = scale < .95f ? 0 : scale > 1.05f ? 2 : 1;
-    Spinner textSize = spinner(sizes, sizeIndex);
-    textSize.setOnItemSelectedListener(
-        listener(
-            i -> {
-              if (scales[i] != ScopeApp.prefs().getFloat("uiTextScale", 1f)) {
-                ScopeApp.prefs().edit().putFloat("uiTextScale", scales[i]).apply();
-                handler.post(this::render);
-              }
-            }));
-    appearance.addView(textSize);
-    toggle(
-        appearance,
-        "Smooth interface animations",
-        "Short transitions and button feedback; Android's reduced-motion setting is respected.",
-        "animations",
-        true);
-    toggle(
-        appearance,
-        "Smooth live waveforms",
-        "Interpolate real measured peaks between audio updates. The saved audio is unchanged.",
-        "smoothWaveforms",
-        true);
+    TextView intro =
+        text(
+            "Choose a section. Changes apply to future recordings unless stated otherwise.",
+            14,
+            MUTED);
+    intro.setPadding(0, dp(8), 0, dp(16));
+    body.addView(intro);
+    section("RECORDING & FILES");
+    settingLink(
+        "recording",
+        "Audio quality & formats",
+        Formats.label(ScopeApp.prefs().getString("codec", "WAV"))
+            + " · sample rate, channels and session limits");
+    settingLink("storage", "Save folder & metadata", StorageFolders.label());
+    settingLink(
+        "naming",
+        "File names & caller details",
+        "Automatic names, optional caller access and filename template");
+    settingLink(
+        "automation",
+        "Automatic call recording",
+        CaptureService.armed
+            ? "Armed · watching for calls"
+            : "Not armed · manual recording remains available");
+    settingLink(
+        "bluetooth", "Bluetooth & microphones", "Phone mic previews and optional headset capture");
+    section("APP & CONNECTIONS");
+    settingLink("appearance", "Appearance", "Dark theme, accent color, text size and motion");
+    settingLink(
+        "notifications",
+        "Notifications & history",
+        "Recording controls, setup alerts and notification channels");
+    settingLink(
+        "connection",
+        "Connect capture helper",
+        ScopeApp.backend + " · Embedded ADB or Shevery / Shizuku");
+    settingLink(
+        "reliability",
+        "Background & offline recording",
+        "USB debugging, Wi-Fi-free helper restart, battery and reboot guidance");
+    section("ADVANCED & SUPPORT");
+    settingLink(
+        "advanced",
+        "Advanced capture & diagnostics",
+        "Manual ports, playback filters, signal fallback and output routing");
+    settingLink(
+        "about",
+        "About AudioScope",
+        "Version " + BuildConfig.VERSION_NAME + " · source and acknowledgments");
+  }
 
-    body.addView(appearance);
-    section("AUTOMATIC FILE NAMING");
-    LinearLayout naming = card();
-    toggle(
-        naming,
-        "Name recordings from call details",
-        "Use available caller, app, and direction; missing information is omitted. Optional access"
-            + " below stays on this phone.",
-        "autoNaming",
-        true);
-    naming.addView(
+  private String settingsTitle() {
+    switch (settingsPage) {
+      case "recording":
+        return "Audio quality & formats";
+      case "storage":
+        return "Save folder & metadata";
+      case "naming":
+        return "File names & caller details";
+      case "automation":
+        return "Automatic call recording";
+      case "bluetooth":
+        return "Bluetooth & microphones";
+      case "appearance":
+        return "Appearance";
+      case "notifications":
+        return "Notifications & history";
+      case "connection":
+        return "Connect capture helper";
+      case "advanced":
+        return "Advanced capture & diagnostics";
+      default:
+        return "About AudioScope";
+    }
+  }
+
+  private void choosePlaybackApp() {
+    if (!settingsEditable()) return;
+    List<android.content.pm.ResolveInfo> apps =
+        getPackageManager()
+            .queryIntentActivities(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+    apps.sort(
+        Comparator.comparing(
+            a -> a.loadLabel(getPackageManager()).toString(), String.CASE_INSENSITIVE_ORDER));
+    LinkedHashMap<Integer, String> names = new LinkedHashMap<>();
+    names.put(-1, "All apps · no UID filter");
+    for (android.content.pm.ResolveInfo app : apps) {
+      int uid = app.activityInfo.applicationInfo.uid;
+      String label =
+          app.loadLabel(getPackageManager()).toString() + " · " + app.activityInfo.packageName;
+      names.merge(uid, label, (first, second) -> first + " / " + second);
+    }
+    List<Integer> uids = new ArrayList<>(names.keySet());
+    new AlertDialog.Builder(this)
+        .setTitle("Playback capture app")
+        .setItems(
+            names.values().toArray(new String[0]),
+            (dialog, which) -> {
+              ScopeApp.prefs().edit().putInt("uidFilter", uids.get(which)).apply();
+              disarmAfterFormatChange();
+              render();
+            })
+        .setNegativeButton("Cancel", null)
+        .show();
+  }
+
+  private void settingLink(String page, String label, String detail) {
+    LinearLayout item = card();
+    LinearLayout heading = horizontal();
+    TextView name = text(label, 16, INK);
+    name.setTypeface(null, Typeface.BOLD);
+    heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView arrow = text("›", 22, ACCENT);
+    arrow.setPadding(dp(12), 0, 0, 0);
+    heading.addView(arrow);
+    item.addView(heading);
+    TextView subtitle = text(detail, 14, MUTED);
+    subtitle.setLineSpacing(dp(3), 1.12f);
+    subtitle.setPadding(0, dp(8), 0, dp(2));
+    item.addView(subtitle);
+    item.setFocusable(true);
+    item.setContentDescription(label + ". " + detail);
+    item.setOnClickListener(
+        v -> {
+          settingsPage = page;
+          render();
+          if (page.equals("reliability")) refreshDebugging();
+        });
+    body.addView(item);
+  }
+
+  private void refreshDebugging() {
+    if (readingDebugging || !settingsPage.equals("reliability")) return;
+    readingDebugging = true;
+    ScopeApp.IO.execute(
+        () -> {
+          try {
+            DebuggingSettings.refresh();
+          } catch (Exception e) {
+            DebuggingSettings.snapshot = new JSONObject();
+            ScopeApp.log("WARN", "Setup status: " + ShellBridge.root(e));
+          } finally {
+            readingDebugging = false;
+          }
+          handler.post(
+              () -> {
+                if (!destroyed && tab == 4 && settingsPage.equals("reliability")) render();
+              });
+        });
+  }
+
+  private void reliabilitySettings() {
+    body.addView(title("Background & offline recording"));
+    section("RECORD WITHOUT INTERNET");
+    LinearLayout offline = card();
+    offline.addView(text("Recording is always local", 17, INK));
+    offline.addView(
         text(
-            "Phone names: "
-                + (CallContext.allowed(Manifest.permission.READ_CALL_LOG)
-                    ? "call log allowed"
-                    : "call-log access off")
-                + " · "
-                + (CallContext.allowed(Manifest.permission.READ_CONTACTS)
-                    ? "contacts allowed"
-                    : "contacts off"),
-            13,
+            "No internet, account or server is needed. Phone microphones work without a helper."
+                + " Protected call and playback sources need the privileged helper to be running.",
+            14,
             MUTED));
-    naming.addView(
+    offline.addView(
+        text(
+            "A helper that is already running can continue after Wi-Fi disconnects. USB debugging"
+                + " helps keep Android's debugging service alive; it does not create a connection"
+                + " port by itself.",
+            14,
+            MUTED));
+    body.addView(offline);
+    section("ANDROID DEBUGGING");
+    LinearLayout usb = card();
+    usb.addView(text("USB debugging · " + DebuggingSettings.state("usb"), 17, INK));
+    usb.addView(
+        text(
+            "No USB cable is needed. Keeping this on can preserve the Embedded ADB helper away from"
+                + " Wi-Fi. Turning it off may stop the helper, and off Wi-Fi it may have no way to"
+                + " restart. Developer options must stay enabled.",
+            14,
+            MUTED));
+    if (!DebuggingSettings.embedded())
+      usb.addView(
+          text(
+              "Shevery / Shizuku manages its own debugging connection. Change these switches in its"
+                  + " manager; turning debugging off can stop that manager too.",
+              14,
+              MUTED));
+    else {
+      usb.addView(button("Turn USB debugging on", CARD, () -> applyDebugging("USB", "1")));
+      usb.addView(
+          button(
+              "Turn USB debugging off…",
+              CARD,
+              () ->
+                  new AlertDialog.Builder(this)
+                      .setTitle("Turn off USB debugging?")
+                      .setMessage(
+                          "This may stop the capture helper. Without Wi-Fi or a working debugging"
+                              + " endpoint, protected audio cannot record until you reconnect. Any"
+                              + " Wi-Fi-free restart option also needs USB debugging.")
+                      .setPositiveButton("Turn off", (d, w) -> applyDebugging("USB", "0"))
+                      .setNegativeButton("Keep on", null)
+                      .show()));
+    }
+    usb.addView(
         button(
-            "Allow phone caller names & direction",
+            "Open Developer options",
             CARD,
-            () ->
-                requestPermissions(
-                    new String[] {
-                      Manifest.permission.READ_CALL_LOG,
-                      Manifest.permission.READ_CONTACTS,
-                      Manifest.permission.READ_PHONE_STATE
-                    },
-                    36)));
-    naming.addView(
+            () -> startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))));
+    usb.addView(button("Refresh actual debugging status", CARD, this::refreshDebugging));
+    body.addView(usb);
+    LinearLayout restart = card();
+    boolean opted = ScopeApp.prefs().getBoolean("offlineRestart", false);
+    String status =
+        DebuggingSettings.offlineReady()
+            ? "Enabled for this boot"
+            : opted ? "Needs re-enabling after reboot" : "Off";
+    restart.addView(text("Wi-Fi-free helper restart · " + status, 17, INK));
+    restart.addView(
         text(
-            "VoIP caller names: "
-                + (CallContext.notificationAccess()
-                    ? "notification access allowed"
-                    : "notification access off")
-                + ". Only ongoing call notifications are used. An app that hides caller or"
-                + " direction keeps those fields empty.",
-            13,
+            "Adds an authorized ADB TCP endpoint so you can restart the helper without Wi-Fi. This"
+                + " is separate from recording without internet. Enable USB debugging first. A"
+                + " reboot removes the listener; reconnect to any Wi-Fi once, even one without"
+                + " internet, then enable this again.",
+            14,
             MUTED));
-    naming.addView(
+    restart.addView(
         button(
-            "Set up VoIP call naming",
-            CARD,
-            () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
-    naming.addView(
-        text(
-            "Example: date_WhatsApp_in_Alex_VoIP playback_0.m4a. Direction appears only when"
-                + " exposed by Android.",
-            13,
-            MUTED));
-    naming.addView(
-        button(
-            "Edit filename template",
+            "Enable Wi-Fi-free restart…",
             CARD,
             () -> {
-              EditText template =
-                  input(
-                      "{date}_{app}_{direction}_{contact}_{source}",
-                      ScopeApp.prefs()
-                          .getString(
-                              "namingTemplate", "{date}_{app}_{direction}_{contact}_{source}"),
-                      false);
+              if (!DebuggingSettings.embedded()) {
+                showText(
+                    "Managed by your helper app",
+                    "Use Shevery / Shizuku's own setup. AudioScope does not change its ADB"
+                        + " transport.");
+                return;
+              }
+              if (!settingsEditable()) return;
               new AlertDialog.Builder(this)
-                  .setTitle("Filename template")
+                  .setTitle("Enable a debugging TCP listener?")
                   .setMessage(
-                      "Fields: {date}, {app}, {direction}, {contact}, {number}, {label}, {source}."
-                          + " Empty fields disappear. Date and a track index keep names unique.")
-                  .setView(template)
+                      "Android's ADB TCP listener may be reachable over your network; this is not a"
+                          + " loopback-only security boundary. Access requires your authorized"
+                          + " device key. Enabling it restarts Android debugging and may stop"
+                          + " Shevery / Shizuku. AudioScope will reconnect its own helper. Only"
+                          + " enable it when you need helper restart away from Wi-Fi.")
+                  .setPositiveButton("Enable", (d, w) -> EmbeddedAdb.enableOfflineRestart())
+                  .setNegativeButton("Cancel", null)
+                  .show();
+            }));
+    restart.addView(
+        button(
+            "Restart helper without Wi-Fi",
+            CARD,
+            () -> {
+              if (!DebuggingSettings.embedded() || !settingsEditable()) return;
+              if (!DebuggingSettings.offlineReady()) {
+                showText(
+                    "Restart endpoint is not ready",
+                    "After a reboot, connect using Wireless debugging and enable Wi-Fi-free helper"
+                        + " restart again. A saved preference alone does not mean the listener is"
+                        + " running.");
+                return;
+              }
+              EmbeddedAdb.launch(DebuggingSettings.port());
+            }));
+    restart.addView(
+        button(
+            "Disable Wi-Fi-free restart",
+            CARD,
+            () -> {
+              if (DebuggingSettings.embedded() && settingsEditable())
+                EmbeddedAdb.disableOfflineRestart();
+            }));
+    body.addView(restart);
+    LinearLayout wireless = card();
+    wireless.addView(text("Wireless debugging · " + DebuggingSettings.state("wireless"), 17, INK));
+    wireless.addView(
+        text(
+            "Android's pairing and connection ports work while joined to Wi-Fi; internet is"
+                + " unnecessary. Use the pairing notification without leaving Android Settings.",
+            14,
+            MUTED));
+    wireless.addView(button("Pair again in Android Settings", CARD, () -> setup("PAIR")));
+    wireless.addView(
+        button("Turn Wireless debugging on", CARD, () -> applyDebugging("WIRELESS", "1")));
+    wireless.addView(
+        button(
+            "Keep Wireless debugging enabled…",
+            CARD,
+            () -> {
+              if (!DebuggingSettings.embedded() || !settingsEditable()) return;
+              if (ScopeApp.prefs().getBoolean("enforceWireless", false)) {
+                ScopeApp.prefs().edit().putBoolean("enforceWireless", false).apply();
+                stopService(new Intent(this, DebuggingGuardService.class));
+                render();
+                return;
+              }
+              new AlertDialog.Builder(this)
+                  .setTitle("Keep Wireless debugging enabled?")
+                  .setMessage(
+                      "While this guard runs and an Embedded ADB helper is reachable, AudioScope"
+                          + " can turn Wireless debugging back on if it was switched off. This is"
+                          + " opt-in and uses a persistent notification. Android may still disable"
+                          + " it off Wi-Fi. It cannot revive a dead helper or bypass reboot pairing"
+                          + " requirements.")
                   .setPositiveButton(
-                      "Save",
+                      "Enable guard",
                       (d, w) -> {
-                        String value = template.getText().toString().trim();
-                        if (!value.isEmpty())
-                          ScopeApp.prefs().edit().putString("namingTemplate", value).apply();
+                        ScopeApp.prefs().edit().putBoolean("enforceWireless", true).apply();
+                        startForegroundService(new Intent(this, DebuggingGuardService.class));
+                        render();
                       })
                   .setNegativeButton("Cancel", null)
                   .show();
             }));
-    body.addView(naming);
-    section("RECORDING DEFAULTS");
-    LinearLayout capture = card();
-    capture.addView(text("Default audio format", 17, INK));
-    capture.addView(
+    wireless.addView(
         text(
-            "Changing this updates every source’s format selector. You can then override individual"
-                + " sources.",
+            "Guard: "
+                + (DebuggingGuardService.running
+                    ? "running"
+                    : ScopeApp.prefs().getBoolean("enforceWireless", false)
+                        ? "saved on, currently stopped; tap above to disable, then re-enable"
+                        : "off"),
             14,
             MUTED));
-    Spinner format =
-        spinner(Formats.LABELS, Formats.index(ScopeApp.prefs().getString("codec", "WAV")));
-    format.setEnabled(!CaptureService.active());
-    format.setOnItemSelectedListener(
-        listener(
-            i -> {
-              String value = Formats.VALUES[i];
-              if (!value.equals(ScopeApp.prefs().getString("codec", "WAV"))) {
-                Formats.setDefault(value);
-                Notices.event(
-                    "Default format changed",
-                    Formats.label(value) + " now applies to every source for new recordings.",
-                    "settings");
-                toast("All source formats updated to " + Formats.label(value));
-              }
-            }));
-    capture.addView(format);
-    capture.addView(
-        button(
-            "Apply default to every source",
-            CARD,
-            () -> {
-              if (settingsEditable()) {
-                Formats.setDefault(ScopeApp.prefs().getString("codec", "WAV"));
-                toast("Every source now uses the default format");
-              }
-            }));
-    capture.addView(
+    body.addView(wireless);
+    LinearLayout mode = card();
+    String current = DebuggingSettings.snapshot.optString("usbMode", "unknown");
+    int index = Arrays.asList(DebuggingSettings.USB_VALUES).indexOf(current);
+    mode.addView(text("USB when screen unlocks", 17, INK));
+    mode.addView(
         text(
-            "M4A saves space. WAV is uncompressed. Opus uses WebM. PCM is headerless; private WAV"
-                + " originals are kept for recovery and waveform playback.",
-            13,
-            MUTED));
-    toggle(
-        capture,
-        "Save copies visible in Files",
-        "Finished audio appears in your selected folder and Files / Recent. Default raw PCM goes in"
-            + " Downloads/AudioScope.",
-        "publicFiles",
-        true);
-    choice(
-        capture,
-        "Sample rate",
-        new String[] {"16,000 Hz", "24,000 Hz", "44,100 Hz", "48,000 Hz"},
-        "rate",
-        new int[] {16000, 24000, 44100, 48000},
-        48000);
-    choice(
-        capture,
-        "Capture channels",
-        new String[] {"Mono", "Stereo"},
-        "channels",
-        new int[] {1, 2},
-        1);
-    choice(
-        capture,
-        "Encoded bitrate",
-        new String[] {"64 kbps", "128 kbps", "192 kbps", "256 kbps"},
-        "bitrate",
-        new int[] {64000, 128000, 192000, 256000},
-        128000);
-    numberSetting(capture, "Session limit in minutes · 0 = unlimited", "maxMinutes", 0, 0, 720);
-    toggle(
-        capture,
-        "Keep CPU awake while recording",
-        "Helps background capture continue while the screen is off.",
-        "wakelock",
-        true);
-    body.addView(capture);
-    section("SAVE LOCATION");
-    LinearLayout storage = card();
-    storage.addView(text("Save folder · " + StorageFolders.label(), 16, INK));
-    storage.addView(
-        text(
-            "Choose a local folder or SD card for finished audio. Files / Recent indexing is"
-                + " requested after saving. Cloud folders use their provider's Recent list."
-                + " Originals remain safe in Sessions.",
+            "Current: " + (index < 0 ? "not verified" : DebuggingSettings.USB_LABELS[index]),
             14,
             MUTED));
-    storage.addView(
-        button(
-            "Choose save folder",
-            CARD,
-            () -> {
-              if (!settingsEditable()) return;
-              Intent picker =
-                  new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                      .addFlags(
-                          Intent.FLAG_GRANT_READ_URI_PERMISSION
-                              | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                              | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-                              | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-              String savedTree = ScopeApp.prefs().getString("saveTree", "");
-              if (!savedTree.isEmpty())
-                picker.putExtra(
-                    android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(savedTree));
-              startActivityForResult(picker, 40);
-            }));
-    storage.addView(
-        button(
-            "Use default Recordings/AudioScope",
-            CARD,
-            () -> {
-              if (settingsEditable()) {
-                StorageFolders.reset();
-                render();
-              }
-            }));
-    toggle(
-        storage,
-        "Copy session metadata",
-        "Write a JSON sidecar in custom folders with source names, format, timing, bookmarks,"
-            + " routing and errors.",
-        "publicMetadata",
-        true);
-    body.addView(storage);
-    section("BLUETOOTH & MICROPHONES");
-    LinearLayout bt = card();
-    bt.addView(text("Ordinary microphones use the phone", 16, INK));
-    bt.addView(
+    mode.addView(
         text(
-            "Phone input is explicitly selected and the actual route is checked. Headset sources"
-                + " appear only while connected and never monitor automatically. Bluetooth mic use"
-                + " may switch CMF earbuds to call audio and interrupt YouTube or music.",
+            "Charging only can prevent USB data renegotiation from restarting Android debugging"
+                + " when you lock the screen. On affected phones, data modes can interrupt"
+                + " recording. You can still choose File transfer manually when connecting to a"
+                + " computer.",
             14,
             MUTED));
-    bt.addView(text(BluetoothRouting.description(), 14, ACCENT));
-    bt.addView(
+    mode.addView(
         button(
-            "Allow Nearby devices",
-            CARD,
-            () -> requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT}, 35)));
-    bt.addView(
-        button(
-            "Open Android Bluetooth settings",
-            CARD,
-            () -> startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS))));
-    List<AudioDeviceInfo> inputs = BluetoothRouting.connected();
-    if (!inputs.isEmpty()) {
-      String[] devices = new String[inputs.size()];
-      int selectedInput = 0;
-      for (int i = 0; i < inputs.size(); i++) {
-        devices[i] = inputs.get(i).getProductName().toString();
-        if (inputs.get(i).getId() == ScopeApp.prefs().getInt("bluetoothInput", -1)
-            || !inputs.get(i).getAddress().isEmpty()
-                && inputs
-                    .get(i)
-                    .getAddress()
-                    .equals(ScopeApp.prefs().getString("bluetoothInputAddress", "")))
-          selectedInput = i;
-      }
-      bt.addView(text("Preferred headset microphone", 14, INK));
-      Spinner devicesPicker = spinner(devices, selectedInput);
-      devicesPicker.setEnabled(!CaptureService.active() && !BluetoothRouting.busy());
-      devicesPicker.setOnItemSelectedListener(
-          listener(
-              i ->
-                  ScopeApp.prefs()
-                      .edit()
-                      .putInt("bluetoothInput", inputs.get(i).getId())
-                      .putString("bluetoothInputAddress", inputs.get(i).getAddress())
-                      .apply()));
-      bt.addView(devicesPicker);
-    }
-    toggle(
-        bt,
-        "Monitor phone microphones",
-        "Turn off phone mic previews if your phone still changes media routing. Recording buttons"
-            + " continue to work.",
-        "phoneMicPreview",
-        true);
-    toggle(
-        bt,
-        "Prepare headset call audio",
-        "Only explicit Bluetooth source actions request communication audio. Turn off to use a"
-            + " route already established by a call app.",
-        "bluetoothCommunication",
-        true);
-    choice(
-        bt,
-        "Bluetooth mic sample rate · Mono",
-        new String[] {"16,000 Hz speech", "24,000 Hz", "48,000 Hz"},
-        "bluetoothRate",
-        new int[] {16000, 24000, 48000},
-        16000);
-    bt.addView(
-        button(
-            "Release AudioScope's idle Bluetooth route",
+            "Change default USB mode…",
             CARD,
             () -> {
-              if (BluetoothRouting.busy()) {
+              if (!DebuggingSettings.embedded()) {
                 showText(
-                    "Bluetooth source still active",
-                    "Stop Bluetooth recording and monitoring before releasing the route.");
+                    "Leave USB mode unchanged with Shizuku",
+                    "Changing the default USB configuration can restart Android debugging and stop"
+                        + " Shevery / Shizuku. AudioScope applies this control only through"
+                        + " Embedded ADB.");
                 return;
               }
-              try {
-                BluetoothRouting.resetIdleRoute();
-                Notices.event(
-                    "Idle headset route released",
-                    "AudioScope released its communication route. If media remains silent, pause"
-                        + " and resume playback or reconnect the headset.",
-                    "settings");
-              } catch (Exception e) {
-                Notices.error("Headset route needs attention", ShellBridge.root(e), "settings");
-              }
-            }));
-    body.addView(bt);
-    section("CALL AUTOMATION");
-    LinearLayout automation = card();
-    automation.addView(text("Automatic phone and app calls", 17, INK));
-    automation.addView(
-        text(
-            "Arm from this screen or Record while AudioScope is open. The persistent notification"
-                + " lets you disarm. Re-arm after reboot or if Android stops the app.",
-            14,
-            MUTED));
-    automation.addView(
-        button(
-            CaptureService.armed ? "Disarm automatic calls" : "Arm automatic calls",
-            ACCENT,
-            () -> setup(CaptureService.armed ? "DISARM_AUTO" : "ARM_AUTO")));
-    automation.addView(
-        button(
-            "Allow phone-call detection",
-            CARD,
-            () -> requestPermissions(new String[] {Manifest.permission.READ_PHONE_STATE}, 23)));
-    automation.addView(
-        text(
-            "Phone-state permission improves carrier detection. VoIP / Wi-Fi calls also use"
-                + " communication audio state and record VoIP playback + mic rather than assuming a"
-                + " carrier route works.",
-            13,
-            MUTED));
-    body.addView(automation);
-    section("OFFLINE CAPTURE HELPER");
-    LinearLayout adb = card();
-    adb.addView(text("Embedded ADB", 18, INK));
-    adb.addView(
-        text(
-            "1. Open Wireless debugging below and enable it.\n"
-                + "2. Choose Pair device with pairing code.\n"
-                + "3. Stay in Settings. Pull down notifications, tap Enter code, and send the six"
-                + " digits.\n"
-                + "AudioScope discovers both ports and starts the helper automatically.",
-            14,
-            MUTED));
-    adb.addView(button("Pair in Wireless debugging", ACCENT, () -> setup("PAIR")));
-    adb.addView(button("Connect paired phone", CARD, () -> setup("CONNECT")));
-    adb.addView(
-        text(
-            "Once connected, capture continues offline without Wi-Fi. Android changes the"
-                + " connection port; Connect paired phone discovers it again.",
-            13,
-            MUTED));
-    body.addView(adb);
-    LinearLayout helper = card();
-    helper.addView(text("Shevery / Shizuku", 18, INK));
-    helper.addView(
-        text(
-            "Start the manager’s service first. Connect requests its Binder and then asks you to"
-                + " authorize AudioScope.",
-            14,
-            MUTED));
-    helper.addView(
-        button(
-            "Connect Shevery / Shizuku",
-            ACCENT,
-            () -> {
-              if (settingsEditable()) {
-                monitors.disable();
-                ScopeApp.app.connectShizuku();
-              }
-            }));
-    helper.addView(
-        button(
-            "Open helper manager",
-            CARD,
-            () -> {
-              Intent i = getPackageManager().getLaunchIntentForPackage("com.hamondev.shevery");
-              if (i == null)
-                i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
-              if (i != null) startActivity(i);
-              else
-                showText(
-                    "Helper manager not installed",
-                    "Install and start Shevery or Shizuku, or use Embedded ADB above.");
-            }));
-    body.addView(helper);
-    section("NOTIFICATIONS");
-    LinearLayout notifications = card();
-    notifications.addView(
-        button(
-            "Enable / manage Android notifications",
-            CARD,
-            () -> {
-              if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                  != PackageManager.PERMISSION_GRANTED)
-                requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 25);
-              else
-                startActivity(
-                    new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                        .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
-            }));
-    toggle(
-        notifications,
-        "Recording and setup updates",
-        "Started, paused, resumed, bookmarks, saved files, helper status, and automation. Recording"
-            + " controls and repair notifications have their own channels.",
-        "eventNotifications",
-        true);
-    notifications.addView(button("Notification history", CARD, this::notificationHistory));
-    notifications.addView(
-        button(
-            "Send a test notification",
-            CARD,
-            () ->
-                Notices.event(
-                    "AudioScope notifications are working",
-                    "Tap Details to open this message. Recording notifications include pause,"
-                        + " bookmark, and stop controls.",
-                    "settings")));
-    body.addView(notifications);
-    section("ADVANCED");
-    LinearLayout advanced = card();
-    LinearLayout content = column();
-    content.setVisibility(View.GONE);
-    advanced.addView(
-        button(
-            "Show / hide advanced setup",
-            CARD,
-            () ->
-                content.setVisibility(
-                    content.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE)));
-    content.addView(text("Manual ADB ports · use if discovery is unavailable", 16, INK));
-    EditText pairPort = input("Pairing port", "", true),
-        code = input("Six-digit pairing code", "", true),
-        connectPort = input("Connection port", ScopeApp.prefs().getString("adbPort", ""), true);
-    content.addView(pairPort);
-    content.addView(code);
-    content.addView(
-        button(
-            "Pair using manual port",
-            CARD,
-            () -> {
-              try {
-                EmbeddedAdb.pairDevice(
-                    Integer.parseInt(pairPort.getText().toString()), code.getText().toString());
-                code.setText("");
-              } catch (Exception e) {
-                toast("Enter Android’s current pairing port");
-              }
-            }));
-    content.addView(connectPort);
-    content.addView(
-        button(
-            "Connect using manual port",
-            CARD,
-            () -> {
               if (!settingsEditable()) return;
-              try {
-                EmbeddedAdb.launch(Integer.parseInt(connectPort.getText().toString()));
-              } catch (Exception e) {
-                toast("Enter Android’s current connection port");
-              }
+              new AlertDialog.Builder(this)
+                  .setTitle("USB when screen unlocks")
+                  .setItems(
+                      DebuggingSettings.USB_LABELS,
+                      (d, w) ->
+                          new AlertDialog.Builder(this)
+                              .setTitle(DebuggingSettings.USB_LABELS[w])
+                              .setMessage(
+                                  "This can restart the capture helper and other debugging"
+                                      + " services. Reconnect the helper afterward if needed. The"
+                                      + " actual device state will be read back where available.")
+                              .setPositiveButton(
+                                  "Apply",
+                                  (dialog, which) ->
+                                      applyDebugging("USB_MODE", DebuggingSettings.USB_VALUES[w]))
+                              .setNegativeButton("Cancel", null)
+                              .show())
+                  .setNegativeButton("Cancel", null)
+                  .show();
             }));
-    content.addView(
-        button("Open Wireless debugging", CARD, () -> PairingService.openWireless(this)));
-    content.addView(
-        button(
-            "Arm Wi-Fi / VoIP playback before a call",
-            CARD,
-            () -> arm(Source.get("voice_playback"))));
-    content.addView(
-        button(
-            "Disarm playback policies",
-            CARD,
-            () -> {
-              if (settingsEditable())
-                ScopeApp.IO.execute(
-                    () -> {
-                      try {
-                        if (ScopeApp.bridge != null) ScopeApp.bridge.disarm();
-                        Notices.event(
-                            "Playback policies released",
-                            "Routes will be registered again when needed.",
-                            "settings");
-                      } catch (Exception e) {
-                        ScopeApp.log("ERROR", e.toString());
-                      }
-                    });
-            }));
-    content.addView(
-        button(
-            "Stop shell helper",
-            CARD,
-            () -> {
-              if (settingsEditable())
-                ScopeApp.IO.execute(
-                    () -> {
-                      try {
-                        if (ScopeApp.bridge != null) ScopeApp.bridge.shutdown();
-                      } catch (Exception ignored) {
-                      }
-                      ScopeApp.bridge = null;
-                      ScopeApp.backend = "Not connected";
-                    });
-            }));
-    toggle(content, "Save raw PCM too", "Headerless PCM16 with timing sidecars.", "raw", false);
-    numberSetting(content, "Playback app UID · −1 = all apps", "uidFilter", -1, -1, 999999);
-    numberSetting(content, "Silence threshold · dBFS", "silenceDb", -60, -120, -10);
-    numberSetting(content, "Silence grace · seconds", "silenceSeconds", 5, 1, 60);
-    toggle(
-        content,
-        "Signal-aware carrier fallback",
-        "If carrier capture stays silent, also try separated call tracks and VoIP playback + mic.",
-        "fallback",
-        false);
-    content.addView(
-        button(
-            "Output routing & mix controls",
-            CARD,
-            () -> {
-              tab = 2;
-              render();
-            }));
-    content.addView(
-        button(
-            "Enable off-Wi-Fi helper restart",
-            CARD,
-            () ->
-                new AlertDialog.Builder(this)
-                    .setTitle("ADB TCP restart")
-                    .setMessage(
-                        "This keeps an authorized ADB listener on port 5555 until reboot and may"
-                            + " stop Shizuku. Disable it below when no longer needed.")
-                    .setPositiveButton("Enable", (d, w) -> EmbeddedAdb.enableOfflineRestart())
-                    .setNegativeButton("Cancel", null)
-                    .show()));
-    two(
-        content,
-        button("Restart port 5555", CARD, () -> EmbeddedAdb.launch(5555)),
-        button("Disable listener", CARD, EmbeddedAdb::disableOfflineRestart));
-    advanced.addView(content);
-    body.addView(advanced);
-    section("ABOUT");
-    LinearLayout about = card();
-    about.addView(text("AudioScope " + BuildConfig.VERSION_NAME, 17, INK));
-    about.addView(
+    body.addView(mode);
+    section("BATTERY & RESTARTS");
+    LinearLayout battery = card();
+    PowerManager power = getSystemService(PowerManager.class);
+    battery.addView(
         text(
-            "Local audio capture and processing. No account, analytics, uploads, or cloud"
-                + " processing. GPLv3-or-later with upstream Section 7 terms; see the source"
-                + " repository for attribution and license.",
+            "Battery optimization · "
+                + (power.isIgnoringBatteryOptimizations(getPackageName())
+                    ? "unrestricted"
+                    : "system managed"),
+            17,
+            INK));
+    battery.addView(
+        text(
+            "On Samsung, set Battery to Unrestricted and remove AudioScope and your helper manager"
+                + " from Sleeping / Deep sleeping apps. Keep recording notifications allowed. A"
+                + " wake lock helps screen-off capture but cannot prevent an OEM or Force stop from"
+                + " stopping the app.",
             14,
             MUTED));
-    about.addView(
+    battery.addView(
         button(
-            "AudioScope source",
+            "Open AudioScope battery & app settings",
             CARD,
-            () -> openUrl("https://github.com/ibrahim91015/AudioScope")));
-    about.addView(
+            () ->
+                startActivity(
+                    new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())))));
+    battery.addView(
         button(
-            "CallVault reference", CARD, () -> openUrl("https://github.com/madkongo/CallVault")));
-    about.addView(button("Shevery", CARD, () -> openUrl("https://github.com/HmnDev-Tech/shevery")));
-    body.addView(about);
+            "Open battery optimization list",
+            CARD,
+            () -> startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))));
+    toggle(
+        battery,
+        "Show setup reminder after reboot or app update",
+        "A notification takes you back to setup. It does not start microphones in the background."
+            + " After reboot, reconnect the helper and re-arm automatic calls from the app.",
+        "restartReminder",
+        true);
+    body.addView(battery);
+  }
+
+  private void applyDebugging(String action, String value) {
+    if (!settingsEditable()) return;
+    if (!DebuggingSettings.embedded() || ScopeApp.bridge == null) {
+      showText(
+          "Connect Embedded ADB first",
+          "These controls need a live, current AudioScope helper. Pair or connect it under Connect"
+              + " capture helper, then return here. You can also change the option in Android"
+              + " Developer options.");
+      return;
+    }
+    monitors.disable();
+    toast("Applying Android setting…");
+    ScopeApp.IO.execute(
+        () -> {
+          try {
+            DebuggingSettings.snapshot = new JSONObject(ScopeApp.bridge.systemSetup(action, value));
+            String key =
+                action.equals("USB") ? "usb" : action.equals("WIRELESS") ? "wireless" : "usbMode";
+            boolean verified = value.equals(DebuggingSettings.snapshot.optString(key));
+            Notices.event(
+                verified ? "Android setting verified" : "Android setting needs verification",
+                verified
+                    ? "The device reports the requested value. Reconnect the helper if Android"
+                        + " restarted its debugging service."
+                    : "The command returned but the device did not confirm the requested value."
+                        + " Check Developer options and reconnect the helper if needed.",
+                "settings");
+          } catch (Exception e) {
+            DebuggingSettings.snapshot = new JSONObject();
+            Notices.error(
+                "Check Android debugging settings",
+                "The helper could not confirm the change. USB changes can restart Android debugging"
+                    + " before a reply returns. Check Developer options; reconnect the helper if"
+                    + " needed.\n\n"
+                    + ShellBridge.root(e),
+                "settings");
+          }
+          handler.post(
+              () -> {
+                if (!destroyed && tab == 4) render();
+              });
+        });
   }
 
   private void setup(String action) {
@@ -1969,23 +2512,46 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   }
 
   private void toggle(LinearLayout c, String label, String detail, String key, boolean fallback) {
-    com.google.android.material.materialswitch.MaterialSwitch s =
+    LinearLayout item = column();
+    item.setPadding(0, dp(12), 0, dp(12));
+    LinearLayout row = horizontal();
+    TextView name = text(label, 16, INK);
+    name.setPadding(0, dp(4), dp(12), dp(4));
+    row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+    com.google.android.material.materialswitch.MaterialSwitch control =
         new com.google.android.material.materialswitch.MaterialSwitch(this);
-    s.setText(label);
-    s.setTextColor(INK);
-    s.setTextSize(Ui.sp(14));
-    s.setPadding(0, dp(8), 0, dp(6));
-    s.setChecked(ScopeApp.prefs().getBoolean(key, fallback));
-    s.setEnabled(!CaptureService.active());
-    s.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-    s.setOnCheckedChangeListener((v, b) -> ScopeApp.prefs().edit().putBoolean(key, b).apply());
-    c.addView(s);
-    c.addView(text(detail, 11, MUTED));
+    control.setContentDescription(label);
+    control.setMinHeight(dp(48));
+    control.setChecked(ScopeApp.prefs().getBoolean(key, fallback));
+    control.setEnabled(!CaptureService.active() && !CaptureService.stopping);
+    control.setTrackTintList(
+        new android.content.res.ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {0xff584365, 0xff39333f}));
+    control.setThumbTintList(
+        new android.content.res.ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {ACCENT, MUTED}));
+    control.setOnCheckedChangeListener(
+        (v, checked) -> ScopeApp.prefs().edit().putBoolean(key, checked).apply());
+    row.addView(control, new LinearLayout.LayoutParams(dp(56), -2));
+    name.setOnClickListener(
+        v -> {
+          if (control.isEnabled()) control.toggle();
+        });
+    item.addView(row);
+    TextView description = text(detail, 14, MUTED);
+    description.setLineSpacing(dp(3), 1.12f);
+    description.setPadding(0, dp(4), 0, 0);
+    item.addView(description);
+    c.addView(item);
   }
 
   private void choice(
       LinearLayout c, String label, String[] labels, String key, int[] values, int fallback) {
-    c.addView(text(label, 12, MUTED));
+    TextView heading = text(label, 16, INK);
+    heading.setPadding(0, dp(14), 0, dp(6));
+    c.addView(heading);
     int value = ScopeApp.prefs().getInt(key, fallback), index = 0;
     for (int i = 0; i < values.length; i++) if (values[i] == value) index = i;
     Spinner s = spinner(labels, index);
@@ -2002,7 +2568,9 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   private void stringChoice(
       LinearLayout c, String label, String[] labels, String key, String fallback) {
-    c.addView(text(label, 12, MUTED));
+    TextView heading = text(label, 16, INK);
+    heading.setPadding(0, dp(14), 0, dp(6));
+    c.addView(heading);
     String value = ScopeApp.prefs().getString(key, fallback);
     int index = 0;
     for (int i = 0; i < labels.length; i++) if (labels[i].equals(value)) index = i;
@@ -2024,7 +2592,9 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   }
 
   private void sourceSpinner(LinearLayout c, String label, String key, String fallback) {
-    c.addView(text(label, 12, MUTED));
+    TextView heading = text(label, 16, INK);
+    heading.setPadding(0, dp(14), 0, dp(6));
+    c.addView(heading);
     List<Source> available = Source.available();
     String[] names = available.stream().map(s -> s.title).toArray(String[]::new);
     int index = 0;
@@ -2039,7 +2609,9 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   private void numberSetting(
       LinearLayout c, String label, String key, int fallback, int min, int max) {
-    c.addView(text(label, 12, MUTED));
+    TextView heading = text(label, 16, INK);
+    heading.setPadding(0, dp(14), 0, dp(6));
+    c.addView(heading);
     EditText e = input(label, String.valueOf(ScopeApp.prefs().getInt(key, fallback)), true);
     e.setEnabled(!CaptureService.active());
     e.setOnFocusChangeListener(

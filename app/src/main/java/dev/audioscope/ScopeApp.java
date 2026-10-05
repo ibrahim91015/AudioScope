@@ -123,7 +123,7 @@ public class ScopeApp extends Application {
     if (bridge != null && bridge.asBinder().equals(b)) return;
     ICaptureBridge incoming = ICaptureBridge.Stub.asInterface(b);
     try {
-      if (incoming.apiVersion() != 2) throw new IllegalStateException("Old helper version");
+      if (incoming.apiVersion() != 3) throw new IllegalStateException("Old helper version");
     } catch (Exception e) {
       backend = "Reconnect helper after update";
       log("WARN", "Old helper detected; restart it in Settings");
@@ -138,6 +138,7 @@ public class ScopeApp extends Application {
     }
     bridge = incoming;
     backend = label;
+    prefs().edit().putString("helperTransport", label.contains("Shizuku") ? "shizuku" : "embedded").apply();
     try {
       b.linkToDeath(
           () -> {

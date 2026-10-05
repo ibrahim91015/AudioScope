@@ -19,10 +19,64 @@ public class ShellBridge extends ICaptureBridge.Stub {
 
   public int apiVersion() {
     check();
-    return 2;
+    return 3;
   }
 
   private final int allowedUid;
+
+  public synchronized String systemSetup(String action, String value) {
+    check();
+    long identity = Binder.clearCallingIdentity();
+    try {
+      if (!action.equals("READ")) {
+        if (pumps.values().stream().anyMatch(p -> p.active))
+          throw new IllegalStateException("Stop protected recording and monitoring first");
+        runSystem(SystemSetupPolicy.command(action, value));
+      }
+      JSONObject result = new JSONObject();
+      result.put(
+          "usb", runSystem(new String[] {"settings", "get", "global", "adb_enabled"}).trim());
+      result.put(
+          "wireless",
+          runSystem(new String[] {"settings", "get", "global", "adb_wifi_enabled"}).trim());
+      result.put("usbMode", SystemSetupPolicy.usbMode(runSystem(new String[] {"dumpsys", "usb"})));
+      result.put("tcpPort", runSystem(new String[] {"getprop", "service.adb.tcp.port"}).trim());
+      return result.toString();
+    } catch (Throwable e) {
+      throw new IllegalStateException(root(e));
+    } finally {
+      Binder.restoreCallingIdentity(identity);
+    }
+  }
+
+  private String runSystem(String[] command) throws Exception {
+    java.lang.Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    Thread drain =
+        new Thread(
+            () -> {
+              try (InputStream in = process.getInputStream()) {
+                byte[] buffer = new byte[4096];
+                int count;
+                while ((count = in.read(buffer)) > 0) {
+                  if (bytes.size() + count <= 65536) bytes.write(buffer, 0, count);
+                }
+              } catch (IOException ignored) {
+              }
+            },
+            "AudioScope-system-setup");
+    drain.start();
+    if (!process.waitFor(5, TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      drain.join(1000);
+      throw new IOException("System setup command timed out");
+    }
+    drain.join(1000);
+    String output = bytes.toString(java.nio.charset.StandardCharsets.UTF_8);
+    if (process.exitValue() != 0)
+      throw new IOException(output.isBlank() ? "System setup was rejected" : output);
+    return output;
+  }
 
   public ShellBridge() {
     allowedUid = resolveAppUid();

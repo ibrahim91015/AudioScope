@@ -176,11 +176,21 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
           try {
             if (CaptureService.active())
               throw new IllegalStateException("Stop recording before changing ADB transport");
+            if (!DebuggingSettings.embedded())
+              throw new IllegalStateException("Use Embedded ADB for this option");
+            DebuggingSettings.refresh();
+            if (!DebuggingSettings.snapshot.optString("usb").equals("1"))
+              throw new IOException(
+                  "Turn USB debugging on and verify it first, then enable Wi-Fi-free helper"
+                      + " restart");
             EmbeddedAdb adb = get();
             if (!adb.isConnected())
               throw new IOException("Connect using the Wireless debugging port first");
             try {
-              AdbStream s = adb.boundedOpen("tcpip:5555");
+              int restartPort =
+                  ScopeApp.prefs().getInt("offlinePort", 47000 + new SecureRandom().nextInt(12000));
+              ScopeApp.prefs().edit().putInt("offlinePort", restartPort).apply();
+              AdbStream s = adb.boundedOpen("tcpip:" + restartPort);
               s.close();
             } catch (Exception ignored) {
             }
@@ -189,12 +199,29 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
               adb.disconnect();
             } catch (Exception ignored) {
             }
-            if (!adb.connect("127.0.0.1", 5555))
+            if (!adb.connect("127.0.0.1", DebuggingSettings.port()))
               throw new IOException("Offline ADB listener did not become reachable");
-            ScopeApp.prefs().edit().putBoolean("offlineRestart", true).apply();
-            ScopeApp.log("INFO", "Off-Wi-Fi restart armed on port 5555 until reboot");
+            launchBlocking(DebuggingSettings.port());
+            ScopeApp.prefs()
+                .edit()
+                .putBoolean("offlineRestart", true)
+                .putInt("offlineBoot", DebuggingSettings.boot())
+                .apply();
+            ScopeApp.log("INFO", "Wi-Fi-free restart endpoint verified for this boot");
+            Notices.event(
+                "Wi-Fi-free helper restart ready",
+                "The authorized endpoint was reached and AudioScope's helper restarted. Keep USB"
+                    + " debugging enabled. After reboot, join Wi-Fi and enable this again.",
+                "settings");
           } catch (Throwable e) {
+            ScopeApp.prefs().edit().putBoolean("offlineRestart", false).apply();
             ScopeApp.log("ERROR", "Offline restart: " + ShellBridge.root(e));
+            Notices.error(
+                "Wi-Fi-free restart was not enabled",
+                "Connect Embedded ADB over Wireless debugging, enable USB debugging, then retry."
+                    + " Android may have restarted other debugging services.\n\n"
+                    + ShellBridge.root(e),
+                "settings");
           }
         });
   }
@@ -204,8 +231,11 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
         () -> {
           try {
             if (CaptureService.active()) throw new IllegalStateException("Stop recording first");
+            if (!DebuggingSettings.embedded())
+              throw new IllegalStateException("Use your helper manager's settings");
             EmbeddedAdb adb = get();
-            if (!adb.isConnected()) adb.connect("127.0.0.1", 5555);
+            if (!adb.isConnected() && !adb.connect("127.0.0.1", DebuggingSettings.port()))
+              throw new IOException("Reconnect the debugging endpoint before requesting shutdown");
             try {
               AdbStream s = adb.boundedOpen("usb:");
               s.close();
@@ -213,8 +243,20 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
             }
             ScopeApp.prefs().edit().putBoolean("offlineRestart", false).apply();
             ScopeApp.log("INFO", "Requested ADB TCP listener shutdown");
+            Notices.event(
+                "Wi-Fi-free restart disabled",
+                "AudioScope requested USB-only ADB and cleared its restart preference. If Android"
+                    + " refused transport changes, turn debugging off and on in Developer options"
+                    + " to close the listener. Reconnect Wireless debugging when needed.",
+                "settings");
           } catch (Throwable e) {
             ScopeApp.log("ERROR", ShellBridge.root(e));
+            Notices.error(
+                "Restart listener shutdown needs attention",
+                "The shutdown request could not be confirmed. Reconnect, or turn Android debugging"
+                    + " off and on in Developer options to close the TCP listener.\n\n"
+                    + ShellBridge.root(e),
+                "settings");
           }
         });
   }

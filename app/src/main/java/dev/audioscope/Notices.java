@@ -10,6 +10,7 @@ public final class Notices {
 
   public static void channels(Context c) {
     NotificationManager n = c.getSystemService(NotificationManager.class);
+    n.createNotificationChannel(new NotificationChannel("reliability", "Debugging guard status", NotificationManager.IMPORTANCE_LOW));
     n.createNotificationChannel(
         new NotificationChannel(
             "capture", "Recording controls", NotificationManager.IMPORTANCE_LOW));

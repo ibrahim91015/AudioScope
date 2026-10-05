@@ -1,12 +1,22 @@
 # AudioScope
 
-An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.3.0**.
+An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.4.0**.
 
 ![Sessions](docs/sessions.png)
 
 ![Recording detail](docs/session-detail.png)
 
 Standard text (100%) is the default. Settings also offers Small (85%) and Large (115%). Source labels and status text use a consistent sans-serif hierarchy.
+
+## Settings and advanced setup
+
+Settings opens eleven separate pages for audio quality, storage, names, automatic calls, Bluetooth, appearance, notifications, helper connection, background/offline use, advanced capture and About. Descriptions use the full width below each switch title so explanations can wrap without competing with the control.
+
+Background & offline recording adds actual USB/Wireless debugging readback, default USB functions, an opt-in Wi-Fi-free helper restart endpoint, a stoppable wireless-debugging guard, battery links and reboot/update reminders. Recording stays local without internet; restart transport is a separate feature. TCP setup is not restricted to loopback by Android, and must be re-enabled after reboot. Protected microphone handoff and automatic post-boot recovery are not claimed.
+
+![Settings](docs/settings-home-0.4.png)
+
+Read the [full CallVault comparison](docs/CALLVAULT-COMPARISON-2026-10-05.md) for settings/feature differences and a prioritized reliability, per-app detection and efficiency roadmap. [Release notes](docs/RELEASE-0.4.0.md) and [validation](docs/VALIDATION.md) describe this build.
 
 ## Record and compare
 
@@ -20,13 +30,13 @@ Standard text (100%) is the default. Settings also offers Small (85%) and Large 
 
 Sessions uses compact recording cards with inline play/pause, a real waveform and elapsed/duration labels. Tap a recording to open its dedicated full-screen view with all tracks, waveform seeking, ten-second skips, playback speed, rename and sharing. One media-session player persists across screens.
 
-Settings → Save folder selects a persistent Android document-tree destination. Audio is staged privately and copied only after encoding completes, with a temporary-name/rename workflow where supported and a finished-file fallback for other providers. A JSON sidecar can accompany custom-folder exports. Default copies use MediaStore in **Recordings/AudioScope** (raw PCM: **Downloads/AudioScope**). Local custom copies request media scanning for Files/Recent; cloud providers manage their own Recent list. Private WAV originals, timing and logs remain available from the full-screen recording’s Files & details / Share session.
+Settings → Save folder & metadata selects a persistent Android document-tree destination. Audio is staged privately and copied only after encoding completes, with a temporary-name/rename workflow where supported and a finished-file fallback for other providers. A JSON sidecar can accompany custom-folder exports. Default copies use MediaStore in **Recordings/AudioScope** (raw PCM: **Downloads/AudioScope**). Local custom copies request media scanning for Files/Recent; cloud providers manage their own Recent list. Private WAV originals, timing and logs remain available from the full-screen recording’s Files & details / Share session.
 
 Optional automatic naming uses date, call app, known direction and available caller/contact, with an editable filename template. Phone call-log/contact permissions and VoIP notification access are optional controls in Settings. Only ongoing call notifications are used. Unknown caller/app/direction stays empty; multiple ambiguous call notifications do not select a guessed caller. Call information stays local. A custom recording label remains available.
 
 Ordinary microphone presets use local AudioRecord, request the built-in phone microphone and verify the actual route before accepting PCM. A rejected or unknown route fails with repair guidance. Connected Bluetooth call-capable devices add three separate headset input presets. They never preview automatically, even when visible or expanded: tap **Start monitoring** or Record explicitly. Bluetooth settings include Nearby devices permission, preferred headset, phone-preview control, communication-route preparation, sample rate and idle-route release. Activating a headset microphone can interrupt non-call media; normal Sources previews do not request a headset communication route.
 
-Settings → Default audio format changes **every source selector** and clears old per-source overrides. Available formats are M4A/AAC, WAV, Opus/WebM and raw PCM. Apply default to every source also resets overrides without changing the default. Encoded files are produced after capture; encoder failure preserves and publishes the WAV instead and posts a repair notification.
+Settings → Audio quality & formats → Default audio format changes **every source selector** and clears old per-source overrides. Available formats are M4A/AAC, WAV, Opus/WebM and raw PCM. Apply default to every source also resets overrides without changing the default. Encoded files are produced after capture; encoder failure preserves and publishes the WAV instead and posts a repair notification.
 
 ## Setup and notifications
 
@@ -44,7 +54,7 @@ The source catalog exposes 27 standard Android input presets and playback usages
 
 ## Device behavior and validation
 
-The user verified **0.1.0** capturing a Wi-Fi voicemail call on an S23 Ultra through VoIP/Teams playback where another recorder was silent. Version 0.3 preserves that voice-communication policy path and includes it in automatic call candidates. A listed route can still be rejected, unavailable or silenced by Android/OEM policy. Audio initialization alone does not prove both call parties are captured.
+The user verified **0.1.0** capturing a Wi-Fi voicemail call on an S23 Ultra through VoIP/Teams playback where another recorder was silent. Versions 0.3 and 0.4 preserve that voice-communication policy path and includes it in automatic call candidates. A listed route can still be rejected, unavailable or silenced by Android/OEM policy. Audio initialization alone does not prove both call parties are captured.
 
 No empty source selection creates a session; failed starts producing no PCM are removed. Silent PCM with real frames is retained, so silence can be diagnosed. See [the requirements audit](docs/REQUIREMENTS-0.3.0.md) and [validation](docs/VALIDATION.md) for completed checks and remaining S23 tests. New physical-device behavior is not claimed from emulator results.
 
@@ -61,6 +71,8 @@ Run device regression tests on a disposable emulator, with microphone and notifi
 ```sh
 adb shell am instrument -w -e class dev.audioscope.SettingsRegressionTest dev.audioscope.test/android.test.InstrumentationTestRunner
 adb shell am instrument -w -e class dev.audioscope.FeatureRegressionTest dev.audioscope.test/android.test.InstrumentationTestRunner
+# Requires the current shell-helper fixture and notification permission:
+adb shell am instrument -w -e class dev.audioscope.SettingsUiRegressionTest dev.audioscope.test/android.test.InstrumentationTestRunner
 ```
 
 Selecting the test class avoids the legacy runner scanning unrelated compatibility classes inside dependencies. The NSD test registers a temporary local pairing service; it does not send a real pairing code or start an external device's helper.

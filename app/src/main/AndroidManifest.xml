@@ -14,8 +14,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
-    <queries><package android:name="moe.shizuku.privileged.api"/><package android:name="com.hamondev.shevery"/></queries>
+    <queries><package android:name="moe.shizuku.privileged.api"/><package android:name="com.hamondev.shevery"/><intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent></queries>
     <application android:name=".ScopeApp" android:label="AudioScope" android:icon="@drawable/ic_scope" android:theme="@style/AppTheme" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
         <activity android:name=".SessionActivity" android:exported="false"/>
@@ -23,6 +24,8 @@
         <service android:name=".PairingService" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Local wireless-debugging discovery and notification reply pairing while the user remains in Android Settings"/></service>
         <service android:name=".CallNotificationListener" android:label="AudioScope call naming" android:exported="true" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"><intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter></service>
         <service android:name=".PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>
+        <service android:name=".DebuggingGuardService" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled Wireless debugging settings guard with persistent stop control; does not start recording"/></service>
+        <receiver android:name=".RestartReminderReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter></receiver>
         <provider android:name=".BridgeProvider" android:authorities="dev.audioscope.bridge" android:exported="true"/>
         <provider android:name=".ShareProvider" android:authorities="dev.audioscope.files" android:exported="false" android:grantUriPermissions="true"/>
         <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="dev.audioscope.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>

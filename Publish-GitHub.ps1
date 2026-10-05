@@ -1,6 +1,6 @@
 ﻿param(
     [string]$RepositoryName = 'AudioScope',
-    [string]$Version = '0.3.0',
+    [string]$Version = '0.4.0',
     [string]$Apk = (Join-Path $PSScriptRoot ("../AudioScope-$Version.apk")),
     [string]$SourceZip = (Join-Path $PSScriptRoot ("../AudioScope-$Version-source.zip"))
 )

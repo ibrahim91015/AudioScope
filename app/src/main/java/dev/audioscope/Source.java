@@ -65,7 +65,8 @@ public final class Source {
               new Source(
                   "communication_input",
                   "Communication mic",
-                  "Echo cancellation / voice processing preset",
+                  "Voice processing preset. Follows Android's chosen communication input, including"
+                      + " Bluetooth, wired or USB microphones. May affect media playback.",
                   "INPUT",
                   7,
                   -1,
@@ -258,6 +259,10 @@ public final class Source {
 
   public boolean flexiblePhone() {
     return id.equals("any_phone_mic");
+  }
+
+  public boolean systemSelectedMic() {
+    return id.equals("communication_input");
   }
 
   public boolean manualPreview() {

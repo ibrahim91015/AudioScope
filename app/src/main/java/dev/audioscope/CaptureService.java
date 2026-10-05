@@ -712,7 +712,7 @@ public class CaptureService extends Service {
           if (source.phoneMic() || source.bluetooth() || source.external()) {
             pinnedInput = BluetoothRouting.select(source);
             boolean preferred = pinnedInput != null && local.setPreferredDevice(pinnedInput);
-            if (!preferred && !source.flexiblePhone())
+            if (!preferred && !source.flexiblePhone() && !source.systemSelectedMic())
               throw new IOException("Microphone route rejected by Android");
           }
           if (!running || monitor && (active() || stopping || preparingAuto())) return false;
@@ -848,7 +848,9 @@ public class CaptureService extends Service {
                 BluetoothRouting.maintain();
                 lastRouteCheck = now;
               }
-              boolean accepted = BluetoothRouting.matches(source, route, pinnedInput);
+              boolean accepted =
+                  source.systemSelectedMic()
+                      || BluetoothRouting.matches(source, route, pinnedInput);
               // Any Phone Mic tolerates an unreported route only while no headset input/route
               // exists.
               if (route == null

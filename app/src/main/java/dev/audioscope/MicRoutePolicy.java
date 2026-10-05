@@ -18,4 +18,8 @@ public final class MicRoutePolicy {
     // Flexible mode follows any non-Bluetooth microphone Android supplies, including wired input.
     return phone(type) || flexible && !bluetooth(type) && type != 25;
   }
+
+  public static boolean acceptInput(boolean systemSelected, boolean flexiblePhone, int type) {
+    return systemSelected || acceptPhone(flexiblePhone, type);
+  }
 }

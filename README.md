@@ -1,6 +1,6 @@
 # AudioScope
 
-An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.5.0**.
+An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.5.1**.
 
 ![Sessions](docs/sessions.png)
 
@@ -16,7 +16,7 @@ Background & offline recording adds actual USB/Wireless debugging readback, defa
 
 ![Settings](docs/settings-home-0.4.png)
 
-Read the [full CallVault comparison](docs/CALLVAULT-COMPARISON-2026-10-05.md) for settings/feature differences and a prioritized reliability, per-app detection and efficiency roadmap. [Release notes](docs/RELEASE-0.5.0.md) and [validation](docs/VALIDATION.md) describe this build.
+Read the [full CallVault comparison](docs/CALLVAULT-COMPARISON-2026-10-05.md) for settings/feature differences and a prioritized reliability, per-app detection and efficiency roadmap. [Release notes](docs/RELEASE-0.5.1.md) and [validation](docs/VALIDATION.md) describe this build.
 
 ## Record and compare
 

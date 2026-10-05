@@ -102,7 +102,7 @@ public final class BluetoothRouting {
     if (list.isEmpty())
       return permitted()
           ? "No Bluetooth microphone connected. Enable Calls for your headset in Android Bluetooth"
-                + " settings."
+              + " settings."
           : "Allow Nearby devices to show Bluetooth microphones.";
     StringBuilder s = new StringBuilder();
     for (AudioDeviceInfo d : list)
@@ -117,6 +117,7 @@ public final class BluetoothRouting {
   }
 
   public static AudioDeviceInfo select(Source source) {
+    if (source.systemSelectedMic()) return null; // Android owns the communication input.
     if (source.phoneMic()) {
       for (AudioDeviceInfo d : audio().getDevices(AudioManager.GET_DEVICES_INPUTS))
         if (d.getType() == AudioDeviceInfo.TYPE_BUILTIN_MIC) return d;
@@ -232,7 +233,9 @@ public final class BluetoothRouting {
 
   public static void verify(Source source, AudioDeviceInfo actual) {
     if (actual == null) return;
-    if (source.phoneMic() && !MicRoutePolicy.acceptPhone(source.flexiblePhone(), actual.getType()))
+    if (source.phoneMic()
+        && !MicRoutePolicy.acceptInput(
+            source.systemSelectedMic(), source.flexiblePhone(), actual.getType()))
       throw new IllegalStateException(
           "Phone microphone route changed to "
               + actual.getProductName()
@@ -245,7 +248,8 @@ public final class BluetoothRouting {
     if (actual == null) return false;
     if (source.bluetooth()) return bluetooth(actual.getType()) && same(actual, pinned);
     if (source.external()) return same(actual, pinned);
-    return MicRoutePolicy.acceptPhone(source.flexiblePhone(), actual.getType());
+    return MicRoutePolicy.acceptInput(
+        source.systemSelectedMic(), source.flexiblePhone(), actual.getType());
   }
 
   public static synchronized boolean busy() {

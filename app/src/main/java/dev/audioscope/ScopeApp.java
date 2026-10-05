@@ -19,6 +19,27 @@ public class ScopeApp extends Application {
   public static final Handler MAIN = new Handler(Looper.getMainLooper());
   public static final SourceMonitor monitor = new SourceMonitor();
   private boolean requestedShizuku, binding;
+  private android.telephony.TelephonyCallback callObserver;
+
+  private static final class CallObserver extends android.telephony.TelephonyCallback
+      implements android.telephony.TelephonyCallback.CallStateListener {
+    public void onCallStateChanged(int state) {
+      CallContext.phone(state);
+    }
+  }
+
+  public void ensureCallObserver() {
+    if (callObserver != null || !CallContext.allowed(android.Manifest.permission.READ_PHONE_STATE))
+      return;
+    try {
+      callObserver = new CallObserver();
+      getSystemService(android.telephony.TelephonyManager.class)
+          .registerTelephonyCallback(getMainExecutor(), callObserver);
+    } catch (Exception e) {
+      callObserver = null;
+    }
+  }
+
   private Shizuku.UserServiceArgs args;
   private final ServiceConnection connection =
       new ServiceConnection() {
@@ -39,6 +60,7 @@ public class ScopeApp extends Application {
     super.onCreate();
     app = this;
     Notices.channels(this);
+    ensureCallObserver();
     log(
         "INFO",
         "AudioScope "
@@ -49,6 +71,37 @@ public class ScopeApp extends Application {
             + Build.MODEL
             + " • Android "
             + Build.VERSION.RELEASE);
+    android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+    audio.registerAudioDeviceCallback(
+        new android.media.AudioDeviceCallback() {
+          String previous = BluetoothRouting.signature();
+
+          private void changed() {
+            String current = BluetoothRouting.signature();
+            if (current.equals(previous)) return;
+            previous = current;
+            Notices.event(
+                current.isEmpty()
+                    ? "Bluetooth microphone disconnected"
+                    : "Bluetooth microphone available",
+                current.isEmpty()
+                    ? "Headset sources disappear from Sources. Phone microphones keep using the"
+                        + " phone; an active headset capture will stop if its requested route is"
+                        + " lost."
+                    : BluetoothRouting.description()
+                        + "\nHeadset previews remain off until you tap Start monitoring.",
+                "sources");
+          }
+
+          public void onAudioDevicesAdded(android.media.AudioDeviceInfo[] devices) {
+            changed();
+          }
+
+          public void onAudioDevicesRemoved(android.media.AudioDeviceInfo[] devices) {
+            changed();
+          }
+        },
+        MAIN);
     Shizuku.addRequestPermissionResultListener(
         (r, g) -> {
           if (g == PackageManager.PERMISSION_GRANTED) bindShizuku();

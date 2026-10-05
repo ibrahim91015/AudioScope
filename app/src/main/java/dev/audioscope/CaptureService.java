@@ -16,7 +16,14 @@ public class CaptureService extends Service {
   public static volatile CaptureService instance;
   public static final Map<String, Track> tracks = new ConcurrentHashMap<>();
   private static final List<Track> allTracks = new CopyOnWriteArrayList<>();
-  public static volatile boolean paused, stopping;
+  public static volatile boolean paused, stopping, recordAllRequested;
+
+  public static boolean allRecording(java.util.Collection<String> ids) {
+    java.util.Set<String> recording = new java.util.HashSet<>();
+    for (Track t : tracks.values()) if (t.running && t.frames > 0) recording.add(t.source.id);
+    return CaptureSelection.all(recordAllRequested, active(), paused, ids, recording);
+  }
+
   public static volatile long startedNs, pausedNs, pauseAt;
   public static volatile File session;
   public static volatile String sessionName = "Ready to capture";
@@ -33,6 +40,9 @@ public class CaptureService extends Service {
   private final JSONArray markers = new JSONArray();
   private int fallbackStage;
   private JSONObject exportSettings;
+  private JSONObject callIdentity = new JSONObject();
+  private long captureWallStart;
+  private boolean automaticLabel;
 
   public static boolean preparingAuto() {
     return instance != null && instance.autoStarting;
@@ -153,14 +163,33 @@ public class CaptureService extends Service {
       fallbackStage = 0;
       startedNs = System.nanoTime();
       automatic = intent.getBooleanExtra("automatic", false);
+      recordAllRequested = intent.getBooleanExtra("recordAll", false);
       label = intent.getStringExtra("label");
       if (label == null || label.isBlank()) label = automatic ? "Call" : "Recording";
+      automaticLabel =
+          intent.getBooleanExtra("autoLabel", label.equals("Call") || label.equals("Recording"));
+      captureWallStart = System.currentTimeMillis();
+      registerPhone();
+      callIdentity = CallContext.snapshot();
+      if (automaticLabel && callIdentity.length() > 0) label = CallContext.label(callIdentity);
       exportSettings = new JSONObject();
       for (String key :
-          new String[] {"routeLeft", "routeRight", "stereo", "mix", "mka", "codec", "bitrate"}) {
+          new String[] {
+            "routeLeft",
+            "routeRight",
+            "stereo",
+            "mix",
+            "mka",
+            "codec",
+            "bitrate",
+            "publicFiles",
+            "publicMetadata"
+          }) {
         Object value = ScopeApp.prefs().getAll().get(key);
         if (value != null) exportSettings.put(key, value);
       }
+      exportSettings.put("saveTree", ScopeApp.prefs().getString("saveTree", ""));
+      exportSettings.put("saveFolderName", StorageFolders.label());
       sessionName = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(new Date());
       session = new File(ScopeApp.sessions(), sessionName);
       if (!session.mkdirs()) throw new IOException("Cannot create session directory");
@@ -397,6 +426,22 @@ public class CaptureService extends Service {
             } catch (Exception ignored) {
             }
           try {
+            callIdentity =
+                CallContext.enrich(callIdentity, captureWallStart, System.currentTimeMillis());
+            if ("Phone".equals(callIdentity.optString("app"))
+                && callIdentity.optString("number").isEmpty()
+                && CallContext.phoneState == 0
+                && CallContext.allowed(android.Manifest.permission.READ_CALL_LOG)) {
+              for (int attempt = 0;
+                  attempt < 3 && callIdentity.optString("number").isEmpty();
+                  attempt++) {
+                Thread.sleep(350);
+                callIdentity =
+                    CallContext.enrich(callIdentity, captureWallStart, System.currentTimeMillis());
+              }
+            }
+            if (automaticLabel && callIdentity.length() > 0)
+              label = CallContext.label(callIdentity);
             writeManifest(true);
             if (finished != null)
               try (FileWriter w = new FileWriter(new File(finished, "events.log"))) {
@@ -434,13 +479,15 @@ public class CaptureService extends Service {
             try {
               Exports.finish(finished);
               int published = PublicRecordings.publish(finished);
-              exportStatus = "Saved · " + published + " files in Recordings/AudioScope";
+              exportStatus =
+                  "Saved · " + published + " files in " + PublicRecordings.destination(finished);
               Notices.event(
                   "Recording saved",
                   published > 0
                       ? published
-                          + " audio files are available in Files → Recordings → AudioScope and"
-                          + " Recent. Tap to listen."
+                          + " audio files saved in "
+                          + PublicRecordings.destination(finished)
+                          + ". Files indexing was requested for Recent. Tap to listen."
                       : "Audio is ready in Sessions. Public file copies are disabled in Settings.",
                   "library");
             } catch (Throwable e) {
@@ -472,6 +519,13 @@ public class CaptureService extends Service {
     j.put("app", "AudioScope");
     j.put("version", BuildConfig.VERSION_NAME);
     j.put("label", label);
+    j.put("automaticLabel", automaticLabel);
+    j.put("call", callIdentity);
+    j.put("timestampUnixMs", captureWallStart);
+    j.put(
+        "namingTemplate",
+        ScopeApp.prefs()
+            .getString("namingTemplate", "{date}_{app}_{direction}_{contact}_{source}"));
     j.put("automatic", automatic);
     j.put("device", Build.MANUFACTURER + " " + Build.MODEL);
     j.put("android", Build.VERSION.RELEASE);
@@ -501,6 +555,9 @@ public class CaptureService extends Service {
 
   private boolean inCall() {
     int mode = getSystemService(AudioManager.class).getMode();
+    if (BluetoothRouting.busy()
+        && phoneState != android.telephony.TelephonyManager.CALL_STATE_OFFHOOK)
+      mode = AudioManager.MODE_NORMAL;
     return mode == AudioManager.MODE_IN_CALL
         || mode == AudioManager.MODE_IN_COMMUNICATION
         || phoneState == android.telephony.TelephonyManager.CALL_STATE_OFFHOOK;
@@ -549,6 +606,7 @@ public class CaptureService extends Service {
       implements android.telephony.TelephonyCallback.CallStateListener {
     public void onCallStateChanged(int state) {
       phoneState = state;
+      CallContext.phone(state);
     }
   }
 
@@ -623,13 +681,17 @@ public class CaptureService extends Service {
       monitor = f == null;
       codec =
           ScopeApp.prefs().getString("format_" + s.id, ScopeApp.prefs().getString("codec", "WAV"));
-      rate = ScopeApp.prefs().getInt("rate", 48000);
-      channels = ScopeApp.prefs().getInt("channels", 1);
+      rate =
+          s.bluetooth()
+              ? ScopeApp.prefs().getInt("bluetoothRate", 16000)
+              : ScopeApp.prefs().getInt("rate", 48000);
+      channels = s.bluetooth() ? 1 : ScopeApp.prefs().getInt("channels", 1);
       gain = ScopeApp.prefs().getFloat("gain_" + s.id, 1);
       muted = ScopeApp.prefs().getBoolean("mute_" + s.id, false);
     }
 
     private ICaptureBridge openedBridge;
+    private boolean bluetoothLease;
 
     void run() {
       if (!running) {
@@ -639,7 +701,7 @@ public class CaptureService extends Service {
       try {
         ICaptureBridge bridge = ScopeApp.bridge;
         openedBridge = bridge;
-        if (bridge != null) {
+        if (bridge != null && !source.phoneMic() && !source.bluetooth()) {
           pipe = bridge.open(source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
           try (DataInputStream in =
               new DataInputStream(
@@ -693,7 +755,12 @@ public class CaptureService extends Service {
           if (ScopeApp.app.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
               != android.content.pm.PackageManager.PERMISSION_GRANTED)
             throw new SecurityException("Microphone permission was revoked");
+          if (source.bluetooth()) bluetoothLease = BluetoothRouting.acquire(source);
           local = b.build();
+          if (source.phoneMic() || source.bluetooth()) {
+            if (!local.setPreferredDevice(BluetoothRouting.select(source)))
+              throw new IOException("Microphone route rejected by Android");
+          }
           if (local.getState() != 1) throw new IOException("AudioRecord initialization failed");
           local.startRecording();
           if (local.getRecordingState() != 3) throw new IOException("AudioRecord not recording");
@@ -707,6 +774,16 @@ public class CaptureService extends Service {
             if (n < 0) throw new IOException("Read error " + n);
             if (n == 0) continue;
             AudioDeviceInfo route = local.getRoutedDevice();
+            if (source.phoneMic() || source.bluetooth()) {
+              BluetoothRouting.verify(source, route);
+              if (route == null) {
+                frame += n / (channels * 2);
+                if (frame > rate * 2L)
+                  throw new IOException(
+                      "Microphone route unavailable; cannot verify the requested device");
+                continue;
+              }
+            }
             if (route != null) device = route.getProductName() + " • type " + route.getType();
             AudioTimestamp ts = new AudioTimestamp();
             long time = System.nanoTime() - n * 1000000000L / (rate * channels * 2);
@@ -718,7 +795,7 @@ public class CaptureService extends Service {
         }
       } catch (Throwable e) {
         if (running) {
-          error = ShellBridge.root(e);
+          error = (source.bluetooth() ? "Bluetooth source: " : "") + ShellBridge.root(e);
           state = e instanceof SecurityException ? "BLOCKED" : "FAILED";
           ScopeApp.log("ERROR", source.id + " • " + error);
           if (!monitor) Notices.problem(source, error, false);
@@ -732,6 +809,11 @@ public class CaptureService extends Service {
           } catch (Exception ignored) {
           }
           local.release();
+        }
+        try {
+          BluetoothRouting.release(bluetoothLease);
+        } catch (Exception e) {
+          ScopeApp.log("WARN", "Bluetooth route release: " + ShellBridge.root(e));
         }
         if (pipe != null)
           try {
@@ -785,7 +867,8 @@ public class CaptureService extends Service {
       db = stats.db;
       nonzero = stats.nonzero;
       clipped += stats.clipped;
-      history[histPos++ % history.length] = (float) stats.peak;
+      history[histPos % history.length] = (float) stats.peak;
+      histPos++;
       state =
           db > ScopeApp.prefs().getInt("silenceDb", -60)
               ? "MONITORING • SIGNAL"
@@ -850,7 +933,8 @@ public class CaptureService extends Service {
                     ? "SILENT"
                     : "LOW SIGNAL";
           }
-          history[histPos++ % history.length] = (float) stats.peak;
+          history[histPos % history.length] = (float) stats.peak;
+          histPos++;
           if (expected >= 0 && c.frame > expected) {
             long gap = (c.frame - expected) * channels * 2;
             while (gap > 0) {

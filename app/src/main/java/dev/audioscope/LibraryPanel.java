@@ -17,7 +17,8 @@ public final class LibraryPanel {
     void details(String title, String detail);
   }
 
-  private final MainActivity activity;
+  private final android.app.Activity activity;
+  private final File selectedSession;
   private final Actions actions;
   private final LinearLayout host;
   private final List<PlayerRow> players = new ArrayList<>();
@@ -30,8 +31,13 @@ public final class LibraryPanel {
     long duration;
   }
 
-  public LibraryPanel(MainActivity a, Actions x) {
+  public LibraryPanel(android.app.Activity a, Actions x) {
+    this(a, x, null);
+  }
+
+  public LibraryPanel(android.app.Activity a, Actions x, File folder) {
     activity = a;
+    selectedSession = folder;
     actions = x;
     host = Ui.column(a);
     render();
@@ -52,16 +58,32 @@ public final class LibraryPanel {
   private void render() {
     host.removeAllViews();
     players.clear();
-    TextView heading = text("Sessions", 20, Ui.INK);
+    TextView heading = text(selectedSession == null ? "Sessions" : "Recording", 20, Ui.INK);
     heading.setTypeface(null, Typeface.BOLD);
-    host.addView(heading);
+    LinearLayout top = Ui.row(activity);
+    if (selectedSession != null)
+      top.addView(
+          Ui.icon(activity, "‹", "Back to Sessions", activity::finish),
+          new LinearLayout.LayoutParams(dp(44), dp(44)));
+    top.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+    if (selectedSession == null)
+      top.addView(
+          Ui.icon(activity, "↻", "Refresh recordings", this::render),
+          new LinearLayout.LayoutParams(dp(44), dp(44)));
+    host.addView(top);
     host.addView(
         text(
-            "Tap Play to listen. Tap or drag the waveform to jump through a track.", 14, Ui.MUTED));
+            selectedSession == null
+                ? "Tap a recording to open all tracks."
+                : "Tap or drag a waveform to seek. Each source is a separate track.",
+            13,
+            Ui.MUTED));
     if (!CaptureService.exportStatus.isEmpty())
       host.addView(text(CaptureService.exportStatus, 13, ThemePalette.accent(activity)));
-    host.addView(Ui.button(activity, "Refresh recordings", false, this::render));
-    File[] folders = ScopeApp.sessions().listFiles(File::isDirectory);
+    File[] folders =
+        selectedSession == null
+            ? ScopeApp.sessions().listFiles(File::isDirectory)
+            : new File[] {selectedSession};
     if (folders == null || folders.length == 0) {
       host.addView(
           text(
@@ -70,7 +92,7 @@ public final class LibraryPanel {
               Ui.MUTED));
       return;
     }
-    Arrays.sort(folders, Comparator.comparing(File::getName).reversed());
+    Arrays.sort(folders, Comparator.comparingLong(LibraryPanel::sessionTime).reversed());
     for (int i = 0; i < folders.length; i++) {
       File folder = folders[i];
       if (folder.equals(CaptureService.session)) continue;
@@ -86,37 +108,45 @@ public final class LibraryPanel {
           text(manifest.optString("label", folder.getName().replace('_', ' ')), 17, Ui.INK);
       title.setTypeface(null, Typeface.BOLD);
       c.addView(title);
-      title.setOnClickListener(v -> rename(folder));
-      title.setContentDescription("Rename " + title.getText());
+      title.setOnClickListener(v -> open(folder));
+      title.setContentDescription("Open recording " + title.getText());
+      c.setOnClickListener(v -> open(folder));
       int count = (int) Arrays.stream(wavs).filter(f -> f.length() > 44).count();
       c.addView(
           text(
               count
-                  + " audio tracks · "
+                  + (count == 1 ? " audio track · " : " audio tracks · ")
                   + (folder.getName().startsWith("self-test")
                       ? "Generated test tones"
                       : recordedAt(folder)),
               13,
               Ui.MUTED));
+      JSONObject call = manifest.optJSONObject("call");
+      if (call != null) {
+        List<String> identity = new ArrayList<>();
+        for (String key : new String[] {"app", "direction", "contact", "number"}) {
+          String value = call.optString(key, "");
+          if (!value.isEmpty() && !value.equals("unknown") && !identity.contains(value))
+            identity.add(value);
+        }
+        if (!identity.isEmpty())
+          c.addView(text(String.join(" · ", identity), 13, ThemePalette.accent(activity)));
+      }
       LinearLayout tracks = Ui.column(activity);
       Arrays.sort(wavs, Comparator.comparing(File::getName));
-      boolean expanded = players.isEmpty();
-      if (expanded) for (File wav : wavs) if (wav.length() > 44) tracks.addView(player(wav));
+      int shown = 0;
+      for (File wav : wavs)
+        if (wav.length() > 44 && (selectedSession != null || shown++ == 0))
+          tracks.addView(player(wav));
       c.addView(tracks);
-      tracks.setVisibility(expanded ? android.view.View.VISIBLE : android.view.View.GONE);
-      c.addView(
-          Ui.button(
-              activity,
-              "Show / hide tracks",
-              false,
-              () -> {
-                if (tracks.getChildCount() == 0)
-                  for (File wav : wavs) if (wav.length() > 44) tracks.addView(player(wav));
-                tracks.setVisibility(
-                    tracks.getVisibility() == android.view.View.VISIBLE
-                        ? android.view.View.GONE
-                        : android.view.View.VISIBLE);
-              }));
+      if (selectedSession == null) {
+        if (count > 1)
+          c.addView(
+              text("+ " + (count - 1) + " more tracks · tap recording to open", 13, Ui.MUTED));
+        host.addView(c);
+        continue;
+      }
+      c.addView(Ui.button(activity, "Rename recording", false, () -> rename(folder)));
       LinearLayout buttons = Ui.row(activity);
       MaterialButton share =
           Ui.button(
@@ -146,6 +176,13 @@ public final class LibraryPanel {
     }
   }
 
+  private void open(File folder) {
+    if (selectedSession != null) return;
+    activity.startActivity(
+        new android.content.Intent(activity, SessionActivity.class)
+            .putExtra("session", folder.getName()));
+  }
+
   private LinearLayout player(File wav) {
     PlayerRow r = new PlayerRow();
     String base = wav.getName().replace(".wav", "");
@@ -157,7 +194,7 @@ public final class LibraryPanel {
     } catch (Exception ignored) {
     }
     LinearLayout c = Ui.column(activity);
-    c.setPadding(0, dp(14), 0, dp(14));
+    c.setPadding(0, dp(selectedSession == null ? 4 : 14), 0, dp(selectedSession == null ? 4 : 14));
     String label = base;
     try {
       label = Source.get(base.replaceFirst("_\\d+$", "")).title;
@@ -236,7 +273,7 @@ public final class LibraryPanel {
       p.setMargins(dp(3), 0, dp(3), 0);
       tools.addView(b, p);
     }
-    c.addView(tools);
+    if (selectedSession != null) c.addView(tools);
     players.add(r);
     return c;
   }
@@ -251,6 +288,18 @@ public final class LibraryPanel {
           current ? (float) PlaybackService.position / Math.max(1, PlaybackService.duration) : 0);
       r.elapsed.setText(current ? clock(PlaybackService.position) : "0:00");
       r.speed.setText(PlaybackService.speed + "×");
+    }
+  }
+
+  private static long sessionTime(File folder) {
+    try {
+      if (folder.getName().startsWith("self-test-"))
+        return Long.parseLong(folder.getName().substring(10));
+      return new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US)
+          .parse(folder.getName())
+          .getTime();
+    } catch (Exception e) {
+      return folder.lastModified();
     }
   }
 
@@ -277,6 +326,11 @@ public final class LibraryPanel {
     name.setTextColor(Ui.INK);
     name.setHint("Session name");
     name.setSingleLine(true);
+    try {
+      name.setText(
+          new JSONObject(Exports.read(new File(folder, "session.json"))).optString("label", ""));
+    } catch (Exception ignored) {
+    }
     name.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(60)});
     new AlertDialog.Builder(activity)
         .setTitle("Rename recording")
@@ -292,6 +346,7 @@ public final class LibraryPanel {
                       File metadata = new File(folder, "session.json");
                       JSONObject manifest = new JSONObject(Exports.read(metadata));
                       manifest.put("label", label);
+                      manifest.put("automaticLabel", false);
                       JSONArray tracks = manifest.optJSONArray("tracks");
                       if (tracks != null)
                         for (int i = 0; i < tracks.length(); i++) {
@@ -315,18 +370,43 @@ public final class LibraryPanel {
                               ext = old.substring(old.lastIndexOf('.') + 1);
                             }
                           }
-                          android.content.ContentValues values =
-                              new android.content.ContentValues();
-                          values.put(
-                              android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
-                              PublicRecordings.name(
-                                  folder,
-                                  label,
-                                  track.optString("title", track.optString("id")),
-                                  i,
-                                  ext));
-                          activity.getContentResolver().update(uri, values, null, null);
+                          android.net.Uri renamed =
+                              PublicRecordings.rename(
+                                  uri,
+                                  PublicRecordings.name(
+                                      folder,
+                                      label,
+                                      track.optString("title", track.optString("id")),
+                                      i,
+                                      ext));
+                          track.put("publicUri", renamed.toString());
+                          try (FileWriter out = new FileWriter(metadata)) {
+                            out.write(manifest.toString(2));
+                          }
                         }
+                      if (manifest.has("publicMetadataUri")) {
+                        android.net.Uri meta =
+                            android.net.Uri.parse(manifest.getString("publicMetadataUri"));
+                        android.net.Uri renamed =
+                            PublicRecordings.rename(
+                                meta,
+                                folder.getName()
+                                    + "_"
+                                    + label.replaceAll("[^a-zA-Z0-9 -]", "_")
+                                    + ".metadata.json");
+                        manifest.put("publicMetadataUri", renamed.toString());
+                        try (FileWriter out = new FileWriter(metadata)) {
+                          out.write(manifest.toString(2));
+                        }
+                        try (java.io.OutputStream out =
+                            activity.getContentResolver().openOutputStream(renamed, "wt")) {
+                          if (out != null)
+                            out.write(
+                                manifest
+                                    .toString(2)
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        }
+                      }
                       try (FileWriter out = new FileWriter(metadata)) {
                         out.write(manifest.toString(2));
                       }

@@ -1,10 +1,13 @@
 ﻿param(
     [string]$RepositoryName = 'AudioScope',
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.3.0',
     [string]$Apk = (Join-Path $PSScriptRoot ("../AudioScope-$Version.apk")),
     [string]$SourceZip = (Join-Path $PSScriptRoot ("../AudioScope-$Version-source.zip"))
 )
 $ErrorActionPreference = 'Stop'
+# Git Credential Manager is installed here but can be absent from an app's PATH.
+$gitHelperDirectory = 'C:\Program Files\Git\mingw64\bin'
+if (Test-Path -LiteralPath $gitHelperDirectory) { $env:Path = $gitHelperDirectory + ';' + $env:Path.Replace('"','') }
 $expectedAccount = 'ibrahim91015'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version.' }
 $tag = "v$Version"

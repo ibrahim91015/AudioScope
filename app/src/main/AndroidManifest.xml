@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
@@ -14,8 +18,10 @@
     <queries><package android:name="moe.shizuku.privileged.api"/><package android:name="com.hamondev.shevery"/></queries>
     <application android:name=".ScopeApp" android:label="AudioScope" android:icon="@drawable/ic_scope" android:theme="@style/AppTheme" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+        <activity android:name=".SessionActivity" android:exported="false"/>
         <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="microphone|mediaProjection"/>
         <service android:name=".PairingService" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Local wireless-debugging discovery and notification reply pairing while the user remains in Android Settings"/></service>
+        <service android:name=".CallNotificationListener" android:label="AudioScope call naming" android:exported="true" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"><intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter></service>
         <service android:name=".PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>
         <provider android:name=".BridgeProvider" android:authorities="dev.audioscope.bridge" android:exported="true"/>
         <provider android:name=".ShareProvider" android:authorities="dev.audioscope.files" android:exported="false" android:grantUriPermissions="true"/>

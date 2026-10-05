@@ -24,3 +24,10 @@ Dependencies are not relicensed by this notice: Material Components and Shizuku
 (MIT-style license). Their respective upstream notices and binary metadata apply.
 
 GPL-3.0-or-later, with upstream additional terms in LICENSE. No warranty.
+
+Version 0.3 adds explicit phone/Bluetooth routing, manual headset previews,
+SAF folder exports and metadata, multiple signal recommendations, full-screen
+recording detail, indicator/motion fixes and optional call-aware file naming.
+The storage and naming designs were compared with CallVault SafHelper,
+RecordingFileNameFormatter and VoipCallerName; the new Java implementations
+are independently written. Upstream capture/license attribution remains above.

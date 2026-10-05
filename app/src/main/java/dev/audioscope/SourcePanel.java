@@ -13,6 +13,8 @@ public final class SourcePanel {
   public interface Actions {
     void record(String[] ids);
 
+    void recordAll(String[] ids);
+
     void details(String title, String detail);
   }
 
@@ -24,10 +26,12 @@ public final class SourcePanel {
   private boolean editing, expanded;
   private MaterialButton all;
   private TextView suggestion;
+  private String bluetoothSignature = BluetoothRouting.signature();
+  private long lastDevices;
   private List<String> recommended = new ArrayList<>();
 
   private static final class Row {
-    MaterialButton record;
+    MaterialButton record, preview;
     TextView status;
     WaveformView wave;
     Spinner format;
@@ -58,6 +62,7 @@ public final class SourcePanel {
   private void render() {
     host.removeAllViews();
     rows.clear();
+    recommended.clear();
     int accent = ThemePalette.accent(activity);
     LinearLayout heading = Ui.row(activity);
     TextView title = text("Sources", 20, Ui.INK);
@@ -96,8 +101,21 @@ public final class SourcePanel {
             "●",
             "Record all shown sources",
             () -> {
-              if (CaptureService.active()) CaptureService.instance.stopSession();
-              else actions.record(rows.keySet().toArray(new String[0]));
+              java.util.List<String> ids = nonHidden();
+              if (CaptureService.allRecording(ids)) CaptureService.instance.stopSession();
+              else if (CaptureService.active()) {
+                CaptureService.recordAllRequested = true;
+                ScopeApp.IO.execute(
+                    () -> {
+                      for (String id : ids) {
+                        CaptureService.Track t = CaptureService.tracks.get(id);
+                        if (t == null || !t.running) {
+                          monitor.release(id);
+                          if (CaptureService.active()) CaptureService.instance.startTrack(id);
+                        }
+                      }
+                    });
+              } else actions.recordAll(ids.toArray(new String[0]));
             });
     all.setTextColor(0xff938d9c);
     controls.addView(all, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -118,7 +136,7 @@ public final class SourcePanel {
             Ui.MUTED));
     com.google.android.material.materialswitch.MaterialSwitch auto =
         new com.google.android.material.materialswitch.MaterialSwitch(activity);
-    auto.setText("Auto · recommend a source");
+    auto.setText("Auto · recommend active sources");
     auto.setTextSize(Ui.sp(14));
     auto.setTextColor(Ui.INK);
     auto.setChecked(ScopeApp.prefs().getBoolean("autoSuggest", false));
@@ -135,18 +153,30 @@ public final class SourcePanel {
       host.addView(
           Ui.button(
               activity,
-              "Record recommendation",
+              "Record recommended sources",
               true,
               () -> {
                 if (recommended.isEmpty()) {
                   actions.details(
                       "No signal to recommend",
                       "Start your call or audio, then wait for the live meters. AudioScope only"
-                          + " recommends a source after measuring real PCM above the silence"
+                          + " recommends sources after measuring real PCM above the silence"
                           + " threshold.");
                   return;
                 }
-                actions.record(recommended.toArray(new String[0]));
+                List<String> ids = new ArrayList<>(recommended);
+                if (CaptureService.active()) {
+                  ScopeApp.IO.execute(
+                      () -> {
+                        for (String id : ids) {
+                          CaptureService.Track t = CaptureService.tracks.get(id);
+                          if (t == null || !t.running) {
+                            monitor.release(id);
+                            if (CaptureService.active()) CaptureService.instance.startTrack(id);
+                          }
+                        }
+                      });
+                } else actions.record(ids.toArray(new String[0]));
               }));
     Set<String> hidden = SourceLayout.hidden();
     List<Source> visible = new ArrayList<>(), concealed = new ArrayList<>();
@@ -189,6 +219,7 @@ public final class SourcePanel {
                         });
                   });
             }));
+    Ui.enter(host);
     monitor.setWanted(rows.keySet());
     monitor.refresh();
   }
@@ -222,9 +253,10 @@ public final class SourcePanel {
     LinearLayout c = Ui.card(activity);
     c.setPadding(
         dp(mode == 2 ? 6 : 12),
-        dp(mode == 2 ? 3 : mode == 1 ? 6 : 10),
+        dp(mode == 2 ? 1 : mode == 1 ? 6 : 10),
         dp(mode == 2 ? 6 : 12),
-        dp(mode == 2 ? 3 : mode == 1 ? 6 : 10));
+        dp(mode == 2 ? 1 : mode == 1 ? 6 : 10));
+    if (mode == 2) ((LinearLayout.LayoutParams) c.getLayoutParams()).bottomMargin = dp(2);
     c.setOnLongClickListener(
         v -> {
           showDetails(s);
@@ -291,7 +323,7 @@ public final class SourcePanel {
     r.record = Ui.icon(activity, "●", "Record " + s.title, () -> record(s));
     r.record.setTextColor(0xff938d9c);
     r.record.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, mode == 2 ? 14 : 20);
-    int control = mode == 2 ? 32 : 44;
+    int control = mode == 2 ? 28 : 44;
     line.addView(r.record, new LinearLayout.LayoutParams(dp(control), dp(control)));
     if (mode == 2) {
       TextView name = text(shortName(s), 12, Ui.INK);
@@ -306,6 +338,30 @@ public final class SourcePanel {
         new LinearLayout.LayoutParams(
             0, dp(mode == 2 ? 20 : mode == 3 ? 28 : mode == 1 ? 32 : 44), 1);
     wp.leftMargin = dp(8);
+    if (s.bluetooth()) {
+      r.preview =
+          Ui.button(
+              activity,
+              "Start monitoring",
+              false,
+              () -> {
+                CaptureService.Track meter = monitor.get(s.id);
+                if (monitor.manual(s.id) && (meter == null || meter.running))
+                  monitor.stopBluetooth(s.id);
+                else {
+                  monitor.startBluetooth(s.id);
+                  ScopeApp.MAIN.postDelayed(
+                      () -> {
+                        CaptureService.Track started = monitor.get(s.id);
+                        if (started != null && !started.error.isEmpty())
+                          Notices.problem(s, started.error, true);
+                      },
+                      1200);
+                }
+              });
+      line.addView(r.preview, new LinearLayout.LayoutParams(0, -2, 1));
+      r.wave.setVisibility(View.GONE);
+    }
     line.addView(r.wave, wp);
     r.wave.setContentDescription(s.title + " live waveform; tap for source details");
     r.wave.setOnClickListener(v -> showDetails(s));
@@ -332,6 +388,7 @@ public final class SourcePanel {
       c.addView(r.status);
       if (mode == 0) c.addView(text(s.detail, 13, Ui.MUTED));
     }
+    if (s.bluetooth()) c.addView(text("May interrupt non-call media audio.", 12, Ui.MUTED));
     // Compact mode keeps its waveform thin; all formats and errors remain in the detail sheet.
     if (mode == 2 && activity.getResources().getConfiguration().fontScale > 1.2f)
       line.setMinimumHeight(dp(44));
@@ -455,22 +512,62 @@ public final class SourcePanel {
         .show();
   }
 
+  private List<String> nonHidden() {
+    List<String> result = new ArrayList<>();
+    Set<String> hidden = SourceLayout.hidden();
+    for (Source source : SourceLayout.ordered())
+      if (!hidden.contains(source.id)) result.add(source.id);
+    return result;
+  }
+
   public void update() {
-    all.setTextColor(CaptureService.active() ? Ui.RED : 0xff938d9c);
-    double strongest = -120;
-    String best = null;
+    if (android.os.SystemClock.elapsedRealtime() - lastDevices > 1500) {
+      lastDevices = android.os.SystemClock.elapsedRealtime();
+      String current = BluetoothRouting.signature();
+      if (!current.equals(bluetoothSignature)) {
+        bluetoothSignature = current;
+        render();
+        return;
+      }
+    }
+    boolean allOn = CaptureService.allRecording(nonHidden());
+    Ui.tint(all, allOn ? Ui.RED : 0xff938d9c);
+    all.setContentDescription(
+        allOn ? "Stop all non-hidden sources" : "Record all non-hidden sources");
     for (Map.Entry<String, Row> e : rows.entrySet()) {
       CaptureService.Track t = track(e.getKey());
       Row r = e.getValue();
       boolean recording = CaptureService.active() && t != null && !t.monitor && t.running;
-      r.record.setTextColor(recording ? Ui.RED : 0xff938d9c);
+      Ui.tint(r.record, recording && !CaptureService.paused ? Ui.RED : 0xff938d9c);
       r.record.setContentDescription(
           (recording ? "Stop " : "Record ") + Source.get(e.getKey()).title);
+      r.wave.recording(recording && !CaptureService.paused);
       r.wave.update(t);
+      if (r.preview != null) {
+        boolean watching = recording || monitor.manual(e.getKey()) && t != null && t.running;
+        r.wave.setVisibility(watching ? View.VISIBLE : View.GONE);
+        r.wave.setContentDescription(
+            recording
+                ? "Recording Bluetooth waveform; tap for details"
+                : "Live Bluetooth waveform; tap to stop monitoring");
+        r.preview.setVisibility(watching ? View.GONE : View.VISIBLE);
+        r.preview.setText(
+            monitor.manual(e.getKey()) && (t == null || t.running)
+                ? "Stop monitoring"
+                : "Start monitoring");
+        // Tapping the monitored waveform stops only the explicit Bluetooth preview.
+        r.wave.setOnClickListener(
+            v -> {
+              if (!recording && monitor.manual(e.getKey())) monitor.stopBluetooth(e.getKey());
+              else showDetails(Source.get(e.getKey()));
+            });
+      }
       if (r.format != null) r.format.setEnabled(!CaptureService.active());
       String status =
           t == null
-              ? "Waiting for monitor"
+              ? Source.get(e.getKey()).bluetooth()
+                  ? "Monitoring off · start explicitly"
+                  : "Live preview off"
               : !t.error.isEmpty()
                   ? CaptureProblem.of(t.error).title + " · tap for help"
                   : String.format(
@@ -488,25 +585,27 @@ public final class SourcePanel {
       }
       r.record.setTooltipText(status);
       r.score = t != null && t.running && t.error.isEmpty() ? r.score * .75 + t.db * .25 : -120;
-      if (r.score > strongest && t != null && t.nonzero > 0) {
-        strongest = r.score;
-        best = e.getKey();
-      }
     }
     recommended.clear();
-    if (best != null && strongest > ScopeApp.prefs().getInt("silenceDb", -60)) {
-      recommended.add(best);
-      if (Source.get(best).playback() && rows.containsKey("mic")) {
-        CaptureService.Track mic = track("mic");
-        if (mic != null && mic.running && mic.error.isEmpty()) recommended.add("mic");
-      }
+    Map<String, Double> signals = new LinkedHashMap<>();
+    for (Map.Entry<String, Row> entry : rows.entrySet()) {
+      CaptureService.Track t = track(entry.getKey());
+      if (t != null && t.running && t.error.isEmpty() && t.nonzero > 0)
+        signals.put(entry.getKey(), entry.getValue().score);
+    }
+    recommended.addAll(
+        SourceRecommendations.select(signals, ScopeApp.prefs().getInt("silenceDb", -60)));
+    if (!recommended.isEmpty()) {
+      List<String> names = new ArrayList<>();
+      for (String id : recommended) names.add(Source.get(id).title);
       suggestion.setText(
-          "Suggested: "
-              + Source.get(best).title
-              + " · "
-              + Math.round(strongest)
-              + " dBFS"
-              + (recommended.size() > 1 ? " + microphone" : ""));
+          "Suggested · "
+              + recommended.size()
+              + " sources\n"
+              + String.join(" · ", names)
+              + "\n"
+              + "All have measured audio near the strongest signal. Separate tracks may"
+              + " overlap.");
     } else suggestion.setText("No active signal yet. Start a call or play audio.");
   }
 }

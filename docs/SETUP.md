@@ -1,6 +1,6 @@
-# AudioScope 0.2 setup
+# AudioScope 0.3 setup
 
-Install the 0.2 APK over 0.1 to preserve data. Both use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
+Install the 0.3 APK over 0.1 or 0.2 to preserve data. Both use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
 
 ## Embedded ADB pairing
 
@@ -33,3 +33,19 @@ The app processes audio locally. A connected detached helper uses Binder and con
 Default format is in Settings. Changing it resets every source selector. Individual overrides can be set afterward. Encoded copies are produced on stop. Public copies appear under Recordings/AudioScope (PCM under Downloads/AudioScope) through MediaStore and should be listed by file managers' Recent view. Private WAV originals, timing, bookmarks and logs are accessible through Sessions → Files & details / Share session.
 
 Notifications are separated into recording controls, playback, setup, problems and routine updates. Enable Android notifications for inline pairing. Alerts stores notification details inside the app as well.
+
+## Custom folder and metadata
+
+Settings → Save folder → Choose save folder opens Android’s folder picker. Pick a local folder such as Documents/Calls or a writable SD-card folder, then approve access. Android disallows granting some storage roots; choose a subfolder. The grant survives restarts and normal APK updates. Older folder grants are retained so saved sessions remain renameable. Copy session metadata writes a JSON sidecar in custom folders with call identity, tracks, formats, timing, bookmarks and error details. Originals are staged privately; a failed custom save falls back to the default public folder with a repair notification.
+
+## Bluetooth / CMF earbuds
+
+Allow Nearby devices in Settings → Bluetooth. Pair the CMF earbuds in Android and enable their Calls profile; media-only A2DP does not expose a microphone. Connected headset presets appear separately on Sources. They remain off until Start monitoring or Record. Ordinary phone microphone sources explicitly request and verify built-in input, while protected call/playback tracks retain their independent helper path.
+
+If YouTube/media changes when using a headset source, stop that source or tap its preview waveform to stop monitoring. The app releases its own communication route when the last headset source ends. Settings offers preferred-headset selection, speech sample rates, disabling headset route preparation when a call app already owns it, disabling phone previews, and releasing an idle route. The app does not seize audio mode from another active call. The CMF/Samsung combination still needs physical acceptance; Android may reject the preferred input.
+
+## Automatic call naming
+
+Enable Name recordings from call details. Allow phone caller names & direction requests optional call-log, contacts and phone-state access. Set up VoIP call naming opens Android notification access; grant AudioScope access if you want caller names exposed in ongoing call notifications. Samsung may require Allow restricted settings on an APK-installed app before enabling notification access. Permissions can be revoked in Android Settings. No call details are uploaded.
+
+The filename template supports {date}, {app}, {direction}, {contact}, {number}, {label}, {source}. Missing values disappear; the date and track index keep exported names distinct. Incoming/outgoing is included only when the call log or Android call notification identifies it. A call app’s hidden details cannot be recovered by inventing a name. A phone call already in progress when monitoring starts can have unknown direction until a matching completed call-log entry appears.

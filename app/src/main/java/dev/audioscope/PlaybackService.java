@@ -140,6 +140,7 @@ public final class PlaybackService extends Service {
   private void resume() {
     if (!ready || player == null) return;
     AudioManager audio = getSystemService(AudioManager.class);
+    if (focus != null) audio.abandonAudioFocusRequest(focus);
     focus =
         new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(

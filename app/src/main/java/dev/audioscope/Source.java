@@ -238,8 +238,52 @@ public final class Source {
                   -1,
                   0xfffa998e)));
 
+  public boolean bluetooth() {
+    return id.startsWith("bluetooth_");
+  }
+
+  public boolean phoneMic() {
+    return "INPUT".equals(group) && !bluetooth();
+  }
+
+  public static final List<Source> BLUETOOTH =
+      Arrays.asList(
+          new Source(
+              "bluetooth_mic",
+              "Bluetooth microphone",
+              "Explicit headset input. May interrupt music and YouTube while the headset is in call"
+                  + " mode.",
+              "BLUETOOTH",
+              1,
+              -1,
+              0xffbe9bff),
+          new Source(
+              "bluetooth_recognition",
+              "Bluetooth voice recognition",
+              "Headset microphone with the recognition preset. Manual monitoring only.",
+              "BLUETOOTH",
+              6,
+              -1,
+              0xffbe9bff),
+          new Source(
+              "bluetooth_communication",
+              "Bluetooth call microphone",
+              "Headset microphone with communication processing. May switch the headset to call"
+                  + " audio.",
+              "BLUETOOTH",
+              7,
+              -1,
+              0xffbe9bff));
+
+  public static List<Source> available() {
+    List<Source> result = new ArrayList<>(ALL);
+    if (!BluetoothRouting.connected().isEmpty()) result.addAll(BLUETOOTH);
+    return result;
+  }
+
   public static Source get(String id) {
     for (Source s : ALL) if (s.id.equals(id)) return s;
+    for (Source s : BLUETOOTH) if (s.id.equals(id)) return s;
     throw new IllegalArgumentException("Unknown source: " + id);
   }
 }

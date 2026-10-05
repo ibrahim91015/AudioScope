@@ -43,6 +43,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   private EditText logFilter;
   private int tab = 0, lastMode = -1;
   private String[] pendingSources;
+  private boolean pendingRecordAll;
   private final LinkedHashSet<String> selected = new LinkedHashSet<>();
   private final Map<String, Row> rows = new HashMap<>();
   private boolean destroyed;
@@ -101,6 +102,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   public void onResume() {
     super.onResume();
     foreground = true;
+    ScopeApp.app.ensureCallObserver();
+    if (tab == 4) render();
     if (tab == 5) enableMeters();
     handler.post(update);
   }
@@ -268,6 +271,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(
         bottom, (v, insets) -> androidx.core.view.WindowInsetsCompat.CONSUMED);
     root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
+    Ui.enter(body);
     switch (tab) {
       case 0:
         capture();
@@ -314,6 +318,10 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             new SourcePanel.Actions() {
               public void record(String[] ids) {
                 startRecord(ids);
+              }
+
+              public void recordAll(String[] ids) {
+                startRecord(ids, true);
               }
 
               public void details(String title, String detail) {
@@ -466,17 +474,18 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   }
 
   private void chooseSources() {
-    String[] names = Source.ALL.stream().map(s -> s.title).toArray(String[]::new);
+    List<Source> available = Source.available();
+    String[] names = available.stream().map(s -> s.title).toArray(String[]::new);
     boolean[] checked = new boolean[names.length];
     Set<String> next = new LinkedHashSet<>(selected);
-    for (int i = 0; i < names.length; i++) checked[i] = next.contains(Source.ALL.get(i).id);
+    for (int i = 0; i < names.length; i++) checked[i] = next.contains(available.get(i).id);
     new AlertDialog.Builder(this)
         .setTitle("Recording sources")
         .setMultiChoiceItems(
             names,
             checked,
             (d, i, on) -> {
-              String id = Source.ALL.get(i).id;
+              String id = available.get(i).id;
               if (on) next.add(id);
               else next.remove(id);
             })
@@ -529,6 +538,11 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   }
 
   private void startRecord(String[] sources) {
+    startRecord(sources, false);
+  }
+
+  private void startRecord(String[] sources, boolean all) {
+    pendingRecordAll = all;
     if (recordingName != null && tab == 0)
       ScopeApp.prefs()
           .edit()
@@ -588,6 +602,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
         new Intent(this, CaptureService.class)
             .setAction("RECORD")
             .putExtra("sources", pendingSources)
+            .putExtra("recordAll", pendingRecordAll)
+            .putExtra("autoLabel", ScopeApp.prefs().getString("recordingLabel", "").isBlank())
             .putExtra(
                 "label",
                 !ScopeApp.prefs().getString("recordingLabel", "").isBlank()
@@ -611,6 +627,22 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   public void onRequestPermissionsResult(int r, String[] p, int[] g) {
     super.onRequestPermissionsResult(r, p, g);
+    ScopeApp.app.ensureCallObserver();
+    if (r == 36) {
+      render();
+      toast("Naming access updated. Unavailable call details will be omitted.");
+      return;
+    }
+    if (r == 35) {
+      render();
+      if (g.length == 0 || g[0] != PackageManager.PERMISSION_GRANTED)
+        Notices.error(
+            "Bluetooth access not enabled",
+            "Phone microphone sources still work. Allow Nearby devices in Android app permissions"
+                + " to show connected headset microphone sources.",
+            "settings");
+      return;
+    }
     if (r == 26 || r == 27) {
       if (g.length > 0 && g[0] == PackageManager.PERMISSION_GRANTED) setup(setupAction);
       else
@@ -657,6 +689,24 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   protected void onActivityResult(int r, int result, Intent data) {
     super.onActivityResult(r, result, data);
+    if (r == 40 && result == RESULT_OK && data != null && data.getData() != null) {
+      try {
+        StorageFolders.remember(data.getData(), data.getFlags());
+        Notices.event(
+            "Save folder changed",
+            "New recordings will be copied to "
+                + StorageFolders.label()
+                + ". Local audio is indexed for Files / Recent after saving.",
+            "settings");
+        render();
+      } catch (Exception e) {
+        Notices.error(
+            "Save folder could not be selected",
+            "The previous save location is unchanged. Pick a writable folder.\n\n"
+                + ShellBridge.root(e),
+            "settings");
+      }
+    }
     if (r == 31) {
       if (result == RESULT_OK && data != null) launchCapture(data);
       else toast("Playback consent was declined");
@@ -695,6 +745,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             for (Map.Entry<String, Row> e : rows.entrySet()) {
               CaptureService.Track t = CaptureService.tracks.get(e.getKey());
               Row row = e.getValue();
+              row.wave.recording(
+                  CaptureService.active() && !CaptureService.paused && t != null && t.running);
               row.wave.update(CaptureService.active() ? t : null);
               if (t != null) {
                 setIfChanged(
@@ -1201,10 +1253,24 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     }
   }
 
+  private void jumpSetting(String heading) {
+    for (int i = 0; i < body.getChildCount(); i++) {
+      View child = body.getChildAt(i);
+      if (child instanceof TextView && heading.contentEquals(((TextView) child).getText())) {
+        ((ScrollView) body.getParent()).smoothScrollTo(0, child.getTop());
+        return;
+      }
+    }
+  }
+
   private void settings() {
     body.addView(title("Settings"));
     body.addView(
         text("Appearance, recording defaults, connections, and notifications.", 14, MUTED));
+    two(
+        body,
+        button("Save folder", CARD, () -> jumpSetting("SAVE LOCATION")),
+        button("Bluetooth", CARD, () -> jumpSetting("BLUETOOTH & MICROPHONES")));
     section("APPEARANCE");
     LinearLayout appearance = card();
     appearance.addView(text("Dark Material You", 18, INK));
@@ -1237,8 +1303,103 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
               }
             }));
     appearance.addView(textSize);
+    toggle(
+        appearance,
+        "Smooth interface animations",
+        "Short transitions and button feedback; Android's reduced-motion setting is respected.",
+        "animations",
+        true);
+    toggle(
+        appearance,
+        "Smooth live waveforms",
+        "Interpolate real measured peaks between audio updates. The saved audio is unchanged.",
+        "smoothWaveforms",
+        true);
 
     body.addView(appearance);
+    section("AUTOMATIC FILE NAMING");
+    LinearLayout naming = card();
+    toggle(
+        naming,
+        "Name recordings from call details",
+        "Use available caller, app, and direction; missing information is omitted. Optional access"
+            + " below stays on this phone.",
+        "autoNaming",
+        true);
+    naming.addView(
+        text(
+            "Phone names: "
+                + (CallContext.allowed(Manifest.permission.READ_CALL_LOG)
+                    ? "call log allowed"
+                    : "call-log access off")
+                + " · "
+                + (CallContext.allowed(Manifest.permission.READ_CONTACTS)
+                    ? "contacts allowed"
+                    : "contacts off"),
+            13,
+            MUTED));
+    naming.addView(
+        button(
+            "Allow phone caller names & direction",
+            CARD,
+            () ->
+                requestPermissions(
+                    new String[] {
+                      Manifest.permission.READ_CALL_LOG,
+                      Manifest.permission.READ_CONTACTS,
+                      Manifest.permission.READ_PHONE_STATE
+                    },
+                    36)));
+    naming.addView(
+        text(
+            "VoIP caller names: "
+                + (CallContext.notificationAccess()
+                    ? "notification access allowed"
+                    : "notification access off")
+                + ". Only ongoing call notifications are used. An app that hides caller or"
+                + " direction keeps those fields empty.",
+            13,
+            MUTED));
+    naming.addView(
+        button(
+            "Set up VoIP call naming",
+            CARD,
+            () -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
+    naming.addView(
+        text(
+            "Example: date_WhatsApp_in_Alex_VoIP playback_0.m4a. Direction appears only when"
+                + " exposed by Android.",
+            13,
+            MUTED));
+    naming.addView(
+        button(
+            "Edit filename template",
+            CARD,
+            () -> {
+              EditText template =
+                  input(
+                      "{date}_{app}_{direction}_{contact}_{source}",
+                      ScopeApp.prefs()
+                          .getString(
+                              "namingTemplate", "{date}_{app}_{direction}_{contact}_{source}"),
+                      false);
+              new AlertDialog.Builder(this)
+                  .setTitle("Filename template")
+                  .setMessage(
+                      "Fields: {date}, {app}, {direction}, {contact}, {number}, {label}, {source}."
+                          + " Empty fields disappear. Date and a track index keep names unique.")
+                  .setView(template)
+                  .setPositiveButton(
+                      "Save",
+                      (d, w) -> {
+                        String value = template.getText().toString().trim();
+                        if (!value.isEmpty())
+                          ScopeApp.prefs().edit().putString("namingTemplate", value).apply();
+                      })
+                  .setNegativeButton("Cancel", null)
+                  .show();
+            }));
+    body.addView(naming);
     section("RECORDING DEFAULTS");
     LinearLayout capture = card();
     capture.addView(text("Default audio format", 17, INK));
@@ -1284,7 +1445,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     toggle(
         capture,
         "Save copies visible in Files",
-        "Audio files appear in Recordings/AudioScope and Recent. Raw PCM goes in"
+        "Finished audio appears in your selected folder and Files / Recent. Default raw PCM goes in"
             + " Downloads/AudioScope.",
         "publicFiles",
         true);
@@ -1317,6 +1478,145 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
         "wakelock",
         true);
     body.addView(capture);
+    section("SAVE LOCATION");
+    LinearLayout storage = card();
+    storage.addView(text("Save folder · " + StorageFolders.label(), 16, INK));
+    storage.addView(
+        text(
+            "Choose a local folder or SD card for finished audio. Files / Recent indexing is"
+                + " requested after saving. Cloud folders use their provider's Recent list."
+                + " Originals remain safe in Sessions.",
+            14,
+            MUTED));
+    storage.addView(
+        button(
+            "Choose save folder",
+            CARD,
+            () -> {
+              if (!settingsEditable()) return;
+              Intent picker =
+                  new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                      .addFlags(
+                          Intent.FLAG_GRANT_READ_URI_PERMISSION
+                              | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                              | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                              | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+              String savedTree = ScopeApp.prefs().getString("saveTree", "");
+              if (!savedTree.isEmpty())
+                picker.putExtra(
+                    android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(savedTree));
+              startActivityForResult(picker, 40);
+            }));
+    storage.addView(
+        button(
+            "Use default Recordings/AudioScope",
+            CARD,
+            () -> {
+              if (settingsEditable()) {
+                StorageFolders.reset();
+                render();
+              }
+            }));
+    toggle(
+        storage,
+        "Copy session metadata",
+        "Write a JSON sidecar in custom folders with source names, format, timing, bookmarks,"
+            + " routing and errors.",
+        "publicMetadata",
+        true);
+    body.addView(storage);
+    section("BLUETOOTH & MICROPHONES");
+    LinearLayout bt = card();
+    bt.addView(text("Ordinary microphones use the phone", 16, INK));
+    bt.addView(
+        text(
+            "Phone input is explicitly selected and the actual route is checked. Headset sources"
+                + " appear only while connected and never monitor automatically. Bluetooth mic use"
+                + " may switch CMF earbuds to call audio and interrupt YouTube or music.",
+            14,
+            MUTED));
+    bt.addView(text(BluetoothRouting.description(), 14, ACCENT));
+    bt.addView(
+        button(
+            "Allow Nearby devices",
+            CARD,
+            () -> requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT}, 35)));
+    bt.addView(
+        button(
+            "Open Android Bluetooth settings",
+            CARD,
+            () -> startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS))));
+    List<AudioDeviceInfo> inputs = BluetoothRouting.connected();
+    if (!inputs.isEmpty()) {
+      String[] devices = new String[inputs.size()];
+      int selectedInput = 0;
+      for (int i = 0; i < inputs.size(); i++) {
+        devices[i] = inputs.get(i).getProductName().toString();
+        if (inputs.get(i).getId() == ScopeApp.prefs().getInt("bluetoothInput", -1)
+            || !inputs.get(i).getAddress().isEmpty()
+                && inputs
+                    .get(i)
+                    .getAddress()
+                    .equals(ScopeApp.prefs().getString("bluetoothInputAddress", "")))
+          selectedInput = i;
+      }
+      bt.addView(text("Preferred headset microphone", 14, INK));
+      Spinner devicesPicker = spinner(devices, selectedInput);
+      devicesPicker.setEnabled(!CaptureService.active() && !BluetoothRouting.busy());
+      devicesPicker.setOnItemSelectedListener(
+          listener(
+              i ->
+                  ScopeApp.prefs()
+                      .edit()
+                      .putInt("bluetoothInput", inputs.get(i).getId())
+                      .putString("bluetoothInputAddress", inputs.get(i).getAddress())
+                      .apply()));
+      bt.addView(devicesPicker);
+    }
+    toggle(
+        bt,
+        "Monitor phone microphones",
+        "Turn off phone mic previews if your phone still changes media routing. Recording buttons"
+            + " continue to work.",
+        "phoneMicPreview",
+        true);
+    toggle(
+        bt,
+        "Prepare headset call audio",
+        "Only explicit Bluetooth source actions request communication audio. Turn off to use a"
+            + " route already established by a call app.",
+        "bluetoothCommunication",
+        true);
+    choice(
+        bt,
+        "Bluetooth mic sample rate · Mono",
+        new String[] {"16,000 Hz speech", "24,000 Hz", "48,000 Hz"},
+        "bluetoothRate",
+        new int[] {16000, 24000, 48000},
+        16000);
+    bt.addView(
+        button(
+            "Release AudioScope's idle Bluetooth route",
+            CARD,
+            () -> {
+              if (BluetoothRouting.busy()) {
+                showText(
+                    "Bluetooth source still active",
+                    "Stop Bluetooth recording and monitoring before releasing the route.");
+                return;
+              }
+              try {
+                BluetoothRouting.resetIdleRoute();
+                Notices.event(
+                    "Idle headset route released",
+                    "AudioScope released its communication route. If media remains silent, pause"
+                        + " and resume playback or reconnect the headset.",
+                    "settings");
+              } catch (Exception e) {
+                Notices.error("Headset route needs attention", ShellBridge.root(e), "settings");
+              }
+            }));
+    body.addView(bt);
     section("CALL AUTOMATION");
     LinearLayout automation = card();
     automation.addView(text("Automatic phone and app calls", 17, INK));
@@ -1725,14 +2025,15 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   private void sourceSpinner(LinearLayout c, String label, String key, String fallback) {
     c.addView(text(label, 12, MUTED));
-    String[] names = Source.ALL.stream().map(s -> s.title).toArray(String[]::new);
+    List<Source> available = Source.available();
+    String[] names = available.stream().map(s -> s.title).toArray(String[]::new);
     int index = 0;
-    for (int i = 0; i < Source.ALL.size(); i++)
-      if (Source.ALL.get(i).id.equals(ScopeApp.prefs().getString(key, fallback))) index = i;
+    for (int i = 0; i < available.size(); i++)
+      if (available.get(i).id.equals(ScopeApp.prefs().getString(key, fallback))) index = i;
     Spinner s = spinner(names, index);
     s.setEnabled(!CaptureService.active());
     s.setOnItemSelectedListener(
-        listener(p -> ScopeApp.prefs().edit().putString(key, Source.ALL.get(p).id).apply()));
+        listener(p -> ScopeApp.prefs().edit().putString(key, available.get(p).id).apply()));
     c.addView(s);
   }
 

@@ -14,7 +14,8 @@ public final class PlaybackWaveform extends View {
       java.util.concurrent.Executors.newFixedThreadPool(2);
   private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private float[] peaks;
-  private float progress;
+  private float progress, targetProgress;
+  private android.animation.ValueAnimator progressAnimator;
   private final DoubleConsumer seek;
   private boolean disposed;
 
@@ -77,10 +78,24 @@ public final class PlaybackWaveform extends View {
 
   public void progress(float p) {
     float next = Math.max(0, Math.min(1, p));
-    if (next != progress) {
+    if (next == targetProgress) return;
+    targetProgress = next;
+    if (progressAnimator != null) progressAnimator.cancel();
+    if (!Ui.motion()) {
       progress = next;
       invalidate();
+      return;
     }
+    if (next == progress) return;
+    progressAnimator = android.animation.ValueAnimator.ofFloat(progress, next);
+    progressAnimator.setDuration(Math.abs(next - progress) > .1f ? 120 : 220);
+    progressAnimator.setInterpolator(new android.view.animation.LinearInterpolator());
+    progressAnimator.addUpdateListener(
+        a -> {
+          progress = (Float) a.getAnimatedValue();
+          invalidate();
+        });
+    progressAnimator.start();
   }
 
   protected void onDraw(Canvas canvas) {
@@ -160,6 +175,7 @@ public final class PlaybackWaveform extends View {
 
   protected void onDetachedFromWindow() {
     disposed = true;
+    if (progressAnimator != null) progressAnimator.cancel();
     super.onDetachedFromWindow();
   }
 }

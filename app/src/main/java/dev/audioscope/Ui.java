@@ -15,6 +15,42 @@ public final class Ui {
       MUTED = 0xffc1b5cd,
       RED = 0xffff8da0;
 
+  public static boolean motion() {
+    return ScopeApp.prefs().getBoolean("animations", true)
+        && android.animation.ValueAnimator.areAnimatorsEnabled();
+  }
+
+  public static void enter(android.view.View view) {
+    if (!motion()) return;
+    view.setAlpha(0);
+    view.setTranslationY(dp(view.getContext(), 6));
+    view.animate()
+        .alpha(1)
+        .translationY(0)
+        .setDuration(160)
+        .setInterpolator(new android.view.animation.DecelerateInterpolator())
+        .start();
+  }
+
+  public static void tint(TextView view, int color) {
+    Object current = view.getTag(R.id.tint_target);
+    if (current instanceof Integer && (Integer) current == color) return;
+    view.setTag(R.id.tint_target, color);
+    android.animation.ValueAnimator prior =
+        (android.animation.ValueAnimator) view.getTag(R.id.tint_animator);
+    if (prior != null) prior.cancel();
+    if (!motion()) {
+      view.setTextColor(color);
+      return;
+    }
+    android.animation.ValueAnimator animator =
+        android.animation.ValueAnimator.ofArgb(view.getCurrentTextColor(), color);
+    animator.setDuration(160);
+    animator.addUpdateListener(a -> view.setTextColor((Integer) a.getAnimatedValue()));
+    view.setTag(R.id.tint_animator, animator);
+    animator.start();
+  }
+
   public static float sp(float size) {
     return size * ScopeApp.prefs().getFloat("uiTextScale", 1f);
   }
@@ -85,6 +121,21 @@ public final class Ui {
     b.setMinimumHeight(dp(c, 44));
     b.setPadding(dp(c, 12), dp(c, 8), dp(c, 12), dp(c, 8));
     b.setOnClickListener(v -> action.run());
+    b.setOnTouchListener(
+        (v, event) -> {
+          if (motion()) {
+            boolean down = event.getAction() == android.view.MotionEvent.ACTION_DOWN;
+            if (down
+                || event.getAction() == android.view.MotionEvent.ACTION_UP
+                || event.getAction() == android.view.MotionEvent.ACTION_CANCEL)
+              v.animate()
+                  .scaleX(down ? .96f : 1f)
+                  .scaleY(down ? .96f : 1f)
+                  .setDuration(down ? 80 : 140)
+                  .start();
+          }
+          return false;
+        });
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
     p.topMargin = dp(c, 8);
     b.setLayoutParams(p);

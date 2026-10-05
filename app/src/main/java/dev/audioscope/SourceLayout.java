@@ -9,6 +9,7 @@ public final class SourceLayout {
           Arrays.asList("voice_playback", "mic", "voice_call", "uplink", "downlink", "media"));
 
   public static List<Source> ordered() {
+    List<Source> available = Source.available();
     List<Source> result = new ArrayList<>();
     Set<String> used = new HashSet<>();
     String order =
@@ -16,10 +17,11 @@ public final class SourceLayout {
             .getString("sourceOrder", "voice_playback,mic,voice_call,uplink,downlink,media");
     for (String id : order.split(","))
       try {
-        if (used.add(id)) result.add(Source.get(id));
+        if (available.stream().anyMatch(x -> x.id.equals(id)) && used.add(id))
+          result.add(Source.get(id));
       } catch (IllegalArgumentException ignored) {
       }
-    for (Source source : Source.ALL) if (used.add(source.id)) result.add(source);
+    for (Source source : available) if (used.add(source.id)) result.add(source);
     return result;
   }
 
@@ -40,6 +42,7 @@ public final class SourceLayout {
     List<String> ids = new ArrayList<>();
     for (Source s : ordered()) ids.add(s.id);
     if (from.equals(before)) return;
+    if (!ids.contains(from)) return;
     ids.remove(from);
     int index = ids.indexOf(before);
     if (index < 0) return;

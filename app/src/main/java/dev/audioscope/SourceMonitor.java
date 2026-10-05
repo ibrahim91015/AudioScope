@@ -7,6 +7,32 @@ import java.util.concurrent.*;
 public final class SourceMonitor {
   private final Map<String, CaptureService.Track> meters = new ConcurrentHashMap<>();
   private volatile boolean enabled;
+  private final Set<String> bluetoothManual = ConcurrentHashMap.newKeySet();
+
+  public boolean manual(String id) {
+    return bluetoothManual.contains(id);
+  }
+
+  public void startBluetooth(String id) {
+    bluetoothManual.add(id);
+    enabled = true;
+    ScopeApp.IO.execute(
+        () -> {
+          release(id);
+          refresh();
+        });
+  }
+
+  public void stopBluetooth(String id) {
+    bluetoothManual.remove(id);
+    refresh();
+  }
+
+  public void toggleBluetooth(String id) {
+    if (!bluetoothManual.remove(id)) bluetoothManual.add(id);
+    refresh();
+  }
+
   private volatile Set<String> wanted = new HashSet<>(SourceLayout.COMMON);
 
   public void setWanted(Collection<String> ids) {
@@ -24,6 +50,7 @@ public final class SourceMonitor {
 
   public void disable() {
     enabled = false;
+    bluetoothManual.clear();
     ScopeApp.IO.execute(this::closeAll);
   }
 
@@ -54,9 +81,14 @@ public final class SourceMonitor {
       backend = current;
     }
     Set<String> requested = wanted;
-    for (String id : new ArrayList<>(meters.keySet())) if (!requested.contains(id)) release(id);
-    for (Source source : Source.ALL) {
-      if (!requested.contains(source.id)) continue;
+    for (String id : new ArrayList<>(meters.keySet()))
+      if (!requested.contains(id)
+          || Source.get(id).bluetooth() && !manual(id)
+          || Source.get(id).phoneMic() && !ScopeApp.prefs().getBoolean("phoneMicPreview", true))
+        release(id);
+    for (Source source : Source.available()) {
+      if (source.phoneMic() && !ScopeApp.prefs().getBoolean("phoneMicPreview", true)) continue;
+      if (!requested.contains(source.id) || source.bluetooth() && !manual(source.id)) continue;
       CaptureService.Track recording = CaptureService.tracks.get(source.id);
       if (CaptureService.active()
           && recording != null
@@ -71,6 +103,7 @@ public final class SourceMonitor {
 
   public void stop() {
     enabled = false;
+    bluetoothManual.clear();
     closeAll();
   }
 

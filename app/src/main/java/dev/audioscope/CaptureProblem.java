@@ -14,6 +14,15 @@ public final class CaptureProblem {
 
   public static CaptureProblem of(String error) {
     String e = error.toLowerCase(Locale.US);
+    if (e.contains("microphone route") || e.contains("bluetooth"))
+      return new CaptureProblem(
+          "Microphone routing needs attention",
+          "The requested phone or Bluetooth microphone was unavailable, disconnected, or rejected"
+              + " by Android. AudioScope stops instead of silently using another microphone.",
+          "For ordinary sources: keep Phone mic selected and retry Microphone alone. For headset"
+              + " sources: allow Nearby devices, enable Calls for your CMF headset in Android"
+              + " Bluetooth settings, then tap Start monitoring. Stop Bluetooth sources to restore"
+              + " media playback. Do not reset a route during a call.");
     if (e.contains("policy")
         && (e.contains("reject") || e.contains("registration") || e.contains("security")))
       return new CaptureProblem(
@@ -24,7 +33,8 @@ public final class CaptureProblem {
               + "2. Stop other experiments, then retry this source alone.\n"
               + "3. For Wi-Fi calls, try VoIP / Wi-Fi call playback plus Microphone.\n"
               + "A protected OEM route may remain unavailable even with a connected helper.");
-    if (e.contains("initialize")
+    if (e.contains("initiliz")
+        || e.contains("initialize")
         || e.contains("initialization")
         || e.contains("not recording")
         || e.contains("unsupported format"))

@@ -2,8 +2,6 @@
 
 An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.5.1**.
 
-![Sessions](docs/sessions.png)
-
 ![Recording detail](docs/session-detail.png)
 
 Standard text (100%) is the default. Settings also offers Small (85%) and Large (115%). Source labels and status text use a consistent sans-serif hierarchy.

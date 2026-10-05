@@ -63,14 +63,14 @@ public class SettingsRegressionTest extends InstrumentationTestCase {
 
   public void testHiddenSourceIsNeverOpenedAndCollapsingReleasesMeter() throws Exception {
     SourceMonitor monitor = ScopeApp.monitor;
-    monitor.setWanted(Collections.singleton("mic"));
+    monitor.setWanted(Collections.singleton("any_phone_mic"));
     monitor.enable();
     monitor.reconcile();
-    assertNotNull(monitor.get("mic"));
+    assertNotNull(monitor.get("any_phone_mic"));
     assertNull(monitor.get("voice_playback"));
     monitor.setWanted(Collections.emptySet());
     monitor.reconcile();
-    assertNull(monitor.get("mic"));
+    assertNull(monitor.get("any_phone_mic"));
     monitor.stop();
   }
 

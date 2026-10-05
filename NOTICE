@@ -38,3 +38,8 @@ an optional wireless guard, reboot reminders and a source-based comparison.
 Advanced behavior and explanatory text were adapted after reviewing CallVault's
 SettingsScreen, OfflineRecording and UsbDefaultConfig at the commit above.
 The Java command bridge, guard and reminders are independently implemented.
+
+Version 0.5 independently implements flexible non-Bluetooth mic capture,
+preview/recording isolation, named external inputs, explicit headset leases and
+route recovery, capped peak normalization and default mix presentation. It
+expands offline TCP listener explanations and opt-in security information.

@@ -14,15 +14,30 @@ public final class CaptureProblem {
 
   public static CaptureProblem of(String error) {
     String e = error.toLowerCase(Locale.US);
-    if (e.contains("microphone route") || e.contains("bluetooth"))
+    if (e.contains("another recording")
+        || e.contains("another microphone")
+        || e.contains("another bluetooth"))
+      return new CaptureProblem(
+          "Monitoring paused to protect recording",
+          "This input conflicts with audio that is already in use. The existing recording is kept"
+              + " running.",
+          "Stop the current recording or microphone preview before starting another monitor."
+              + " Recording waveforms already show the saved tracks; extra previews are"
+              + " unnecessary.");
+    if (e.contains("microphone route")
+        || e.contains("bluetooth")
+        || e.contains("requested microphone")
+        || e.contains("any phone mic"))
       return new CaptureProblem(
           "Microphone routing needs attention",
-          "The requested phone or Bluetooth microphone was unavailable, disconnected, or rejected"
-              + " by Android. AudioScope stops instead of silently using another microphone.",
-          "For ordinary sources: keep Phone mic selected and retry Microphone alone. For headset"
-              + " sources: allow Nearby devices, enable Calls for your CMF headset in Android"
-              + " Bluetooth settings, then tap Start monitoring. Stop Bluetooth sources to restore"
-              + " media playback. Do not reset a route during a call.");
+          "The requested phone, headset or external microphone was unavailable, disconnected, or"
+              + " rejected by Android. Any Phone Mic follows non-Bluetooth input changes; named"
+              + " headset sources remain pinned and never silently fall back to a phone mic.",
+          "For ordinary sources: try Any Phone Mic alone; it follows non-Bluetooth route changes."
+              + " For headset sources: allow Nearby devices, enable Calls for your CMF headset in"
+              + " Android Bluetooth settings, then tap Start monitoring. Stop Bluetooth sources to"
+              + " restore media playback. For named USB/wired inputs, reconnect that device and"
+              + " retry. Do not reset a route during a call.");
     if (e.contains("policy")
         && (e.contains("reject") || e.contains("registration") || e.contains("security")))
       return new CaptureProblem(

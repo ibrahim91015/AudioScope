@@ -59,6 +59,21 @@ public class ScopeApp extends Application {
   public void onCreate() {
     super.onCreate();
     app = this;
+    if (!prefs().getBoolean("micRouting05", false)) {
+      android.content.SharedPreferences.Editor e =
+          prefs().edit().putBoolean("micRouting05", true).putBoolean("mix", true);
+      Set<String> selected =
+          new LinkedHashSet<>(
+              prefs()
+                  .getStringSet(
+                      "selected", new LinkedHashSet<>(Arrays.asList("mic", "voice_playback"))));
+      if (selected.equals(new HashSet<>(Arrays.asList("mic", "voice_playback")))) {
+        selected.remove("mic");
+        selected.add("any_phone_mic");
+        e.putStringSet("selected", selected);
+      }
+      e.apply();
+    }
     Notices.channels(this);
     ensureCallObserver();
     log(
@@ -82,14 +97,16 @@ public class ScopeApp extends Application {
             previous = current;
             Notices.event(
                 current.isEmpty()
-                    ? "Bluetooth microphone disconnected"
-                    : "Bluetooth microphone available",
+                    ? "External microphones disconnected"
+                    : "Microphone devices changed",
                 current.isEmpty()
-                    ? "Headset sources disappear from Sources. Phone microphones keep using the"
-                        + " phone; an active headset capture will stop if its requested route is"
-                        + " lost."
+                    ? "Disconnected headset, USB and wired inputs disappear from Sources. Named"
+                        + " microphone recordings stop if their requested device is lost. Any Phone"
+                        + " Mic can follow non-Bluetooth inputs."
                     : BluetoothRouting.description()
-                        + "\nHeadset previews remain off until you tap Start monitoring.",
+                        + "\nNamed Bluetooth, USB and wired inputs appear when Show each connected"
+                        + " microphone is enabled. Their previews stay off until you tap Start"
+                        + " monitoring.",
                 "sources");
           }
 
@@ -138,7 +155,10 @@ public class ScopeApp extends Application {
     }
     bridge = incoming;
     backend = label;
-    prefs().edit().putString("helperTransport", label.contains("Shizuku") ? "shizuku" : "embedded").apply();
+    prefs()
+        .edit()
+        .putString("helperTransport", label.contains("Shizuku") ? "shizuku" : "embedded")
+        .apply();
     try {
       b.linkToDeath(
           () -> {

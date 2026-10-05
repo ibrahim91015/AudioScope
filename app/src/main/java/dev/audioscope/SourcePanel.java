@@ -196,8 +196,9 @@ public final class SourcePanel {
     if (expanded) {
       host.addView(
           text(
-              "Expanded routes are monitored while this tab is visible. Collapse to release them."
-                  + " Some advanced routes compete for the same input.",
+              "Playback previews run while visible and idle. Microphone presets start explicitly;"
+                  + " Any Phone Mic is the default phone preview. All previews pause during"
+                  + " recording.",
               13,
               Ui.MUTED));
       addCards(concealed, mode, true);
@@ -338,7 +339,7 @@ public final class SourcePanel {
         new LinearLayout.LayoutParams(
             0, dp(mode == 2 ? 20 : mode == 3 ? 28 : mode == 1 ? 32 : 44), 1);
     wp.leftMargin = dp(8);
-    if (s.bluetooth()) {
+    if (s.manualPreview()) {
       r.preview =
           Ui.button(
               activity,
@@ -346,7 +347,7 @@ public final class SourcePanel {
               false,
               () -> {
                 CaptureService.Track meter = monitor.get(s.id);
-                if (monitor.manual(s.id) && (meter == null || meter.running))
+                if (monitor.manual(s.id) && meter != null && meter.running)
                   monitor.stopBluetooth(s.id);
                 else {
                   monitor.startBluetooth(s.id);
@@ -442,7 +443,7 @@ public final class SourcePanel {
 
   private void record(Source s) {
     CaptureService.Track t = track(s.id);
-    if (t != null && !t.error.isEmpty() && !t.running) {
+    if (t != null && !t.error.isEmpty() && !t.running && !t.monitor) {
       Notices.problem(s, t.error, true);
       showDetails(s);
       return;
@@ -478,7 +479,7 @@ public final class SourcePanel {
         s.detail
             + "\n\n"
             + (t == null
-                ? "Not being monitored"
+                ? monitor.blocked(s.id).isEmpty() ? "Not being monitored" : monitor.blocked(s.id)
                 : t.error.isEmpty()
                     ? String.format(
                         Locale.US,
@@ -548,14 +549,14 @@ public final class SourcePanel {
         r.wave.setVisibility(watching ? View.VISIBLE : View.GONE);
         r.wave.setContentDescription(
             recording
-                ? "Recording Bluetooth waveform; tap for details"
-                : "Live Bluetooth waveform; tap to stop monitoring");
+                ? "Recording microphone waveform; tap for details"
+                : "Live microphone waveform; tap to stop monitoring");
         r.preview.setVisibility(watching ? View.GONE : View.VISIBLE);
         r.preview.setText(
             monitor.manual(e.getKey()) && (t == null || t.running)
                 ? "Stop monitoring"
                 : "Start monitoring");
-        // Tapping the monitored waveform stops only the explicit Bluetooth preview.
+        // Tapping the monitored waveform stops only this explicit microphone preview.
         r.wave.setOnClickListener(
             v -> {
               if (!recording && monitor.manual(e.getKey())) monitor.stopBluetooth(e.getKey());
@@ -563,11 +564,14 @@ public final class SourcePanel {
             });
       }
       if (r.format != null) r.format.setEnabled(!CaptureService.active());
+      String blocked = monitor.blocked(e.getKey());
       String status =
           t == null
-              ? Source.get(e.getKey()).bluetooth()
-                  ? "Monitoring off · start explicitly"
-                  : "Live preview off"
+              ? !blocked.isEmpty()
+                  ? blocked
+                  : Source.get(e.getKey()).manualPreview()
+                      ? "Monitoring off · start explicitly"
+                      : "Live preview off"
               : !t.error.isEmpty()
                   ? CaptureProblem.of(t.error).title + " · tap for help"
                   : String.format(
@@ -581,7 +585,8 @@ public final class SourcePanel {
                       t.db);
       if (r.status != null && !status.contentEquals(r.status.getText())) {
         r.status.setText(status);
-        r.status.setTextColor(t != null && !t.error.isEmpty() ? Ui.RED : Ui.MUTED);
+        r.status.setTextColor(
+            !blocked.isEmpty() || t != null && !t.error.isEmpty() ? Ui.RED : Ui.MUTED);
       }
       r.record.setTooltipText(status);
       r.score = t != null && t.running && t.error.isEmpty() ? r.score * .75 + t.db * .25 : -120;

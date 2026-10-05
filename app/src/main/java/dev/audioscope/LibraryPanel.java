@@ -133,11 +133,14 @@ public final class LibraryPanel {
           c.addView(text(String.join(" · ", identity), 13, ThemePalette.accent(activity)));
       }
       LinearLayout tracks = Ui.column(activity);
-      Arrays.sort(wavs, Comparator.comparing(File::getName));
+      Arrays.sort(
+          wavs,
+          Comparator.<File>comparingInt(f -> f.getName().equals("mix.wav") ? 0 : 1)
+              .thenComparing(File::getName));
       int shown = 0;
       for (File wav : wavs)
         if (wav.length() > 44 && (selectedSession != null || shown++ == 0))
-          tracks.addView(player(wav));
+          tracks.addView(player(wav, manifest));
       c.addView(tracks);
       if (selectedSession == null) {
         if (count > 1)
@@ -183,7 +186,7 @@ public final class LibraryPanel {
             .putExtra("session", folder.getName()));
   }
 
-  private LinearLayout player(File wav) {
+  private LinearLayout player(File wav, JSONObject manifest) {
     PlayerRow r = new PlayerRow();
     String base = wav.getName().replace(".wav", "");
     File m4a = new File(wav.getParent(), base + ".m4a"),
@@ -196,10 +199,18 @@ public final class LibraryPanel {
     LinearLayout c = Ui.column(activity);
     c.setPadding(0, dp(selectedSession == null ? 4 : 14), 0, dp(selectedSession == null ? 4 : 14));
     String label = base;
+    if (base.equals("mix")) label = "Mono mix";
     try {
-      label = Source.get(base.replaceFirst("_\\d+$", "")).title;
+      if (!base.equals("mix")) label = Source.get(base.replaceFirst("_\\d+$", "")).title;
     } catch (Exception ignored) {
     }
+    JSONArray saved = manifest.optJSONArray("tracks");
+    if (saved != null)
+      for (int i = 0; i < saved.length(); i++) {
+        JSONObject track = saved.optJSONObject(i);
+        if (track != null && wav.getName().equals(track.optString("file")))
+          label = track.optString("title", label);
+      }
     c.addView(
         text(
             label + " · " + (r.file.equals(m4a) ? "M4A" : r.file.equals(opus) ? "Opus" : "WAV"),

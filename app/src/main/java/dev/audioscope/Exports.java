@@ -36,7 +36,14 @@ public final class Exports {
             manifest.optString("routeRight"),
             false);
       if (manifest.optBoolean("mix"))
-        PcmRouter.export(new File(folder, "mix.wav"), inputs, rate, "", "", true);
+        PcmRouter.export(
+            new File(folder, "mix.wav"),
+            inputs,
+            rate,
+            "",
+            "",
+            true,
+            manifest.optBoolean("normalizeMix", true));
       if (manifest.optBoolean("mka")) MkaWriter.export(new File(folder, "multitrack.mka"), mka);
       int bitrate = manifest.optInt("bitrate", 128000);
       for (int i = 0; i < tracks.length(); i++) {

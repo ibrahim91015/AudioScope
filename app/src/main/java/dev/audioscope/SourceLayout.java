@@ -6,7 +6,14 @@ import java.util.*;
 public final class SourceLayout {
   public static final Set<String> COMMON =
       new LinkedHashSet<>(
-          Arrays.asList("voice_playback", "mic", "voice_call", "uplink", "downlink", "media"));
+          Arrays.asList(
+              "voice_playback",
+              "any_phone_mic",
+              "mic",
+              "voice_call",
+              "uplink",
+              "downlink",
+              "media"));
 
   public static List<Source> ordered() {
     List<Source> available = Source.available();
@@ -14,7 +21,8 @@ public final class SourceLayout {
     Set<String> used = new HashSet<>();
     String order =
         ScopeApp.prefs()
-            .getString("sourceOrder", "voice_playback,mic,voice_call,uplink,downlink,media");
+            .getString(
+                "sourceOrder", "voice_playback,any_phone_mic,mic,voice_call,uplink,downlink,media");
     for (String id : order.split(","))
       try {
         if (available.stream().anyMatch(x -> x.id.equals(id)) && used.add(id))
@@ -22,6 +30,14 @@ public final class SourceLayout {
       } catch (IllegalArgumentException ignored) {
       }
     for (Source source : available) if (used.add(source.id)) result.add(source);
+    // An existing custom order gains the new default directly before the regular mic.
+    if (!order.contains("any_phone_mic")) {
+      Source flexible = Source.get("any_phone_mic");
+      result.remove(flexible);
+      int mic = 0;
+      while (mic < result.size() && !result.get(mic).id.equals("mic")) mic++;
+      result.add(mic, flexible);
+    }
     return result;
   }
 

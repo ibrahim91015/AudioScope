@@ -111,6 +111,32 @@ public class AudioPipelineTest {
   }
 
   @Test
+  public void optionalTrackNormalizationBalancesLevelsAndCanBeDisabled() throws Exception {
+    File a = constant("loud.wav", 4800, (short) 20000),
+        b = constant("quiet.wav", 4800, (short) 10000);
+    List<PcmRouter.Input> ins =
+        Arrays.asList(
+            new PcmRouter.Input("a", a, 0, 100000000, 1),
+            new PcmRouter.Input("b", b, 0, 100000000, 1));
+    try {
+      File normalized = new File(folder, "normalized.wav"), plain = new File(folder, "plain.wav");
+      PcmRouter.export(normalized, ins, 48000, "", "", true, true);
+      PcmRouter.export(plain, ins, 48000, "", "", true, false);
+      try (WavFile.Reader r = new WavFile.Reader(normalized)) {
+        assertEquals(23197, r.sample(1000), 1);
+      }
+      try (WavFile.Reader r = new WavFile.Reader(plain)) {
+        assertEquals(15000, r.sample(1000), 1);
+      }
+      try (WavFile.Reader r = new WavFile.Reader(b)) {
+        assertEquals(10000, r.sample(1000), 0);
+      }
+    } finally {
+      for (PcmRouter.Input i : ins) i.close();
+    }
+  }
+
+  @Test
   public void multitrackMatroskaContainsSeparateNamedPcmTracks() throws Exception {
     File a = constant("a.wav", 4800, (short) 1000),
         b = constant("b.wav", 4800, (short) 2000),

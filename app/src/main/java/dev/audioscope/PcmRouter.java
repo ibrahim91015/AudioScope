@@ -10,6 +10,7 @@ public final class PcmRouter {
     public final WavFile.Reader reader;
     public final long offsetNs, spanNs;
     public final double gain;
+    private double level = 1;
 
     public Input(String id, File file, long offsetNs, long spanNs, double gain) throws IOException {
       this.id = id;
@@ -24,7 +25,16 @@ public final class PcmRouter {
       if (position < 0 || position >= reader.frames) return 0;
       long f = (long) position;
       return (reader.sample(f) * (1 - (position - f)) + reader.sample(f + 1) * (position - f))
-          * gain;
+          * gain
+          * level;
+    }
+
+    void normalize() throws IOException {
+      if (gain == 0) return;
+      double peak = 0;
+      for (long f = 0; f < reader.frames; f++) peak = Math.max(peak, Math.abs(reader.sample(f)));
+      // Silence stays silent. Limit amplification to 12 dB to avoid exploding low noise.
+      if (peak > 0) level = Math.min(4, 23197 / peak);
     }
 
     public void close() throws IOException {
@@ -35,6 +45,22 @@ public final class PcmRouter {
   public static void export(
       File output, List<Input> inputs, int rate, String left, String right, boolean mix)
       throws IOException {
+    export(output, inputs, rate, left, right, mix, false);
+  }
+
+  public static void export(
+      File output,
+      List<Input> inputs,
+      int rate,
+      String left,
+      String right,
+      boolean mix,
+      boolean normalizeTracks)
+      throws IOException {
+    for (Input i : inputs) {
+      i.level = 1;
+      if (mix && normalizeTracks) i.normalize();
+    }
     long end = 0;
     for (Input i : inputs) end = Math.max(end, i.offsetNs + i.spanNs);
     long frames = (end * rate + 999999999) / 1000000000L;

@@ -79,7 +79,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     }
     selected.addAll(
         ScopeApp.prefs()
-            .getStringSet("selected", new LinkedHashSet<>(Arrays.asList("mic", "voice_playback"))));
+            .getStringSet(
+                "selected", new LinkedHashSet<>(Arrays.asList("any_phone_mic", "voice_playback"))));
     getWindow().setStatusBarColor(BG);
     getWindow().setNavigationBarColor(BG);
     if (saved == null) routeIntent(getIntent());
@@ -443,12 +444,15 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     preset.addView(text("Quick selections", 17, INK));
     two(
         preset,
-        button("Voice memo", CARD, () -> selectPreset("mic")),
-        button("Wi-Fi / app call", CARD, () -> selectPreset("voice_playback", "mic")));
+        button("Voice memo", CARD, () -> selectPreset("any_phone_mic")),
+        button("Wi-Fi / app call", CARD, () -> selectPreset("voice_playback", "any_phone_mic")));
     two(
         preset,
-        button("Carrier call", CARD, () -> selectPreset("voice_call", "mic", "voice_playback")),
-        button("Media + mic", CARD, () -> selectPreset("media", "mic")));
+        button(
+            "Carrier call",
+            CARD,
+            () -> selectPreset("voice_call", "any_phone_mic", "voice_playback")),
+        button("Media + mic", CARD, () -> selectPreset("media", "any_phone_mic")));
     two(
         preset,
         button("Save preset", CARD, () -> prompt("Preset name", "My setup", this::savePreset)),
@@ -623,11 +627,18 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
 
   private void launchCapture(Intent data) {
     launching = true;
-    monitors.disable();
+    monitors.suspendForRecording();
     ScopeApp.IO.execute(
         () -> {
-          monitors.stop();
-          handler.post(() -> launchCaptureReady(data));
+          try {
+            BluetoothRouting.reserveForRecording(pendingSources);
+            monitors.stop();
+            handler.post(() -> launchCaptureReady(data));
+          } catch (Exception e) {
+            BluetoothRouting.finishTransfer();
+            launching = false;
+            Notices.error("Microphone could not start", ShellBridge.root(e), "sources");
+          }
         });
   }
 
@@ -654,6 +665,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     handler.postDelayed(
         () -> {
           launching = false;
+          handler.postDelayed(BluetoothRouting::finishTransfer, 8000);
           if (tab == 0 || tab == 5) render();
         },
         500);
@@ -915,7 +927,19 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             ACCENT));
     LinearLayout outputs = card();
     toggle(outputs, "Stereo pair WAV", "L / R assignments below", "stereo", false);
-    toggle(outputs, "Normalized mono mix", "Weighted sum with headroom", "mix", false);
+    toggle(
+        outputs,
+        "Create mono mix",
+        "Combine recorded tracks into one listening track. Individual originals remain available.",
+        "mix",
+        true);
+    toggle(
+        outputs,
+        "Normalize track levels in mix",
+        "Measure each track's peak and balance it toward −3 dBFS before mixing with headroom."
+            + " Originals stay unchanged; quiet background noise can become louder.",
+        "normalizeMix",
+        true);
     toggle(outputs, "True multitrack MKA", "One named PCM audio track per source", "mka", false);
     body.addView(outputs);
     LinearLayout pair = card();
@@ -1534,6 +1558,20 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
           "Helps background capture continue while the screen is off.",
           "wakelock",
           true);
+      toggle(
+          capture,
+          "Create mono mix",
+          "On stop, combine all captured tracks into one listening track. Sessions shows the mix"
+              + " first; open the recording for individual tracks.",
+          "mix",
+          true);
+      toggle(
+          capture,
+          "Normalize track levels in mix",
+          "Balance each track toward −3 dBFS, with at most 12 dB amplification and headroom in the"
+              + " combined mix. Originals remain unchanged; background noise may become louder.",
+          "normalizeMix",
+          true);
       body.addView(capture);
     }
     if (settingsPage.equals("storage")) {
@@ -1588,15 +1626,43 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     if (settingsPage.equals("bluetooth")) {
       section("BLUETOOTH & MICROPHONES");
       LinearLayout bt = card();
-      bt.addView(text("Ordinary microphones use the phone", 16, INK));
+      bt.addView(text("Phone mic first; headset inputs are explicit", 16, INK));
       bt.addView(
           text(
-              "Phone input is explicitly selected and the actual route is checked. Headset sources"
-                  + " appear only while connected and never monitor automatically. Bluetooth mic"
-                  + " use may switch CMF earbuds to call audio and interrupt YouTube or music.",
+              "Any Phone Mic starts with the built-in mic and follows non-Bluetooth changes,"
+                  + " including wired/USB input. Regular Microphone stays on phone/telephony"
+                  + " routes. Headset inputs appear only while connected and never monitor"
+                  + " automatically. Bluetooth mic use can interrupt music or YouTube.",
               14,
               MUTED));
       bt.addView(text(BluetoothRouting.description(), 14, ACCENT));
+      toggle(
+          bt,
+          "Show each connected microphone",
+          "Add named Bluetooth, USB and wired microphone sources. Android may allow only one active"
+              + " headset input; unavailable devices show an error instead of stealing an active"
+              + " route.",
+          "showDeviceMics",
+          true);
+      toggle(
+          bt,
+          "Hold Bluetooth mic until stopped",
+          "Keep an explicitly started headset in communication audio even if media playback is"
+              + " affected. Disable only when another call app should manage the route."
+              + " Disconnecting the device still ends its track.",
+          "holdBluetoothMic",
+          true);
+      bt.addView(
+          button(
+              "Record Bluetooth mic now",
+              CARD,
+              () -> {
+                if (BluetoothRouting.connected().isEmpty()) {
+                  showText("Connect a headset first", BluetoothRouting.description());
+                  return;
+                }
+                startRecord(new String[] {"bluetooth_any"}, false);
+              }));
       bt.addView(
           button(
               "Allow Nearby devices",
@@ -1637,8 +1703,9 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
       toggle(
           bt,
           "Monitor phone microphones",
-          "Turn off phone mic previews if your phone still changes media routing. Recording buttons"
-              + " continue to work.",
+          "Any Phone Mic previews automatically while idle. Other microphone presets require Start"
+              + " monitoring. All previews pause during a recording, so opening Sources cannot"
+              + " steal its mic.",
           "phoneMicPreview",
           true);
       toggle(
@@ -2169,18 +2236,21 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
         DebuggingSettings.offlineReady()
             ? "Enabled for this boot"
             : opted ? "Needs re-enabling after reboot" : "Off";
-    restart.addView(text("Wi-Fi-free helper restart · " + status, 17, INK));
+    restart.addView(text("Restart capture helper without Wi-Fi · " + status, 17, INK));
     restart.addView(
         text(
-            "Adds an authorized ADB TCP endpoint so you can restart the helper without Wi-Fi. This"
-                + " is separate from recording without internet. Enable USB debugging first. A"
-                + " reboot removes the listener; reconnect to any Wi-Fi once, even one without"
-                + " internet, then enable this again.",
+            "Recording itself is always offline. This optional setup keeps Android's ADB service"
+                + " listening on a saved TCP port so AudioScope can restart a stopped helper while"
+                + " disconnected from Wi-Fi. It does not automatically restart the app or re-arm"
+                + " calls. First connect through Wireless debugging and enable USB debugging. Setup"
+                + " lasts only until reboot; afterward join Wi-Fi (internet is unnecessary),"
+                + " reconnect and enable it again. A running helper does not need this listener"
+                + " just to record.",
             14,
             MUTED));
     restart.addView(
         button(
-            "Enable Wi-Fi-free restart…",
+            "Enable helper restart without Wi-Fi…",
             CARD,
             () -> {
               if (!DebuggingSettings.embedded()) {
@@ -2194,11 +2264,21 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
               new AlertDialog.Builder(this)
                   .setTitle("Enable a debugging TCP listener?")
                   .setMessage(
-                      "Android's ADB TCP listener may be reachable over your network; this is not a"
-                          + " loopback-only security boundary. Access requires your authorized"
-                          + " device key. Enabling it restarts Android debugging and may stop"
-                          + " Shevery / Shizuku. AudioScope will reconnect its own helper. Only"
-                          + " enable it when you need helper restart away from Wi-Fi.")
+                      "This starts an ADB TCP listener on a randomized saved port. AudioScope"
+                          + " connects through 127.0.0.1, but Android may also expose that port on"
+                          + " Wi-Fi or other network interfaces. A high port is not a security"
+                          + " boundary.\n\n"
+                          + "ADB grants powerful shell access. Authorized computer/device keys may"
+                          + " connect; traditional TCP ADB is not the same TLS-protected transport"
+                          + " as Wireless debugging. Use trusted networks, revoke unknown debugging"
+                          + " authorizations in Developer options, and disable this listener when"
+                          + " finished. If shutdown cannot be confirmed, toggle debugging or"
+                          + " reboot.\n\n"
+                          + "Enabling restarts Android debugging and may stop Shevery/Shizuku or an"
+                          + " active experiment. Stop recording first. AudioScope reconnects its"
+                          + " helper and checks the endpoint before reporting ready. This setup"
+                          + " expires on reboot and does not provide automatic call recording after"
+                          + " reboot.")
                   .setPositiveButton("Enable", (d, w) -> EmbeddedAdb.enableOfflineRestart())
                   .setNegativeButton("Cancel", null)
                   .show();
@@ -2672,6 +2752,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             || k.equals("raw")
             || k.equals("stereo")
             || k.equals("mix")
+            || k.equals("normalizeMix")
             || k.equals("mka")
             || k.startsWith("route")
             || k.startsWith("gain_")

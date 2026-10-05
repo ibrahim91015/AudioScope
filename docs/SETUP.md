@@ -1,6 +1,6 @@
-# AudioScope 0.4 setup
+# AudioScope 0.5 setup
 
-Install the 0.4 APK over an earlier release to preserve data. All releases use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
+Install the 0.5 APK over an earlier release to preserve data. All releases use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
 
 ## Embedded ADB pairing
 
@@ -20,7 +20,7 @@ Start the installed manager's service. In AudioScope Settings → Connect captur
 
 ## Recording a call
 
-For Wi-Fi/Teams/app calls, compare VoIP / Wi-Fi call playback and Microphone on Sources. Advanced capture & diagnostics can arm communication playback before joining a call. Automatic calls also pre-arms this playback policy when a helper is connected and starts VoIP playback + microphone + carrier capture when a call is detected.
+For Wi-Fi/Teams/app calls, compare VoIP / Wi-Fi call playback and Any Phone Mic on Sources. Advanced capture & diagnostics can arm communication playback before joining a call. Automatic calls also pre-arms this playback policy when a helper is connected and starts VoIP playback + microphone + carrier capture when a call is detected.
 
 For carrier calls, probe both-sides or separate local/remote sources. Audio Policy rejected means that privilege or OEM policy refused that route; it does not mean all sources fail. AudioRecord could not open can reflect an unavailable route, sample format or too many concurrent inputs. Try one source, 48 kHz Mono, and inspect actual signal.
 
@@ -40,9 +40,9 @@ Settings → Save folder & metadata → Choose save folder opens Android’s fol
 
 ## Bluetooth / CMF earbuds
 
-Allow Nearby devices in Settings → Bluetooth & microphones. Pair the CMF earbuds in Android and enable their Calls profile; media-only A2DP does not expose a microphone. Connected headset presets appear separately on Sources. They remain off until Start monitoring or Record. Ordinary phone microphone sources explicitly request and verify built-in input, while protected call/playback tracks retain their independent helper path.
+Allow Nearby devices in Settings → Bluetooth & microphones. Pair the CMF earbuds in Android and enable their Calls profile; media-only A2DP does not expose a microphone. Connected headset presets appear separately on Sources. They remain off until Start monitoring or Record. Any Phone Mic is the default idle preview and starts ordinary MIC with a built-in preference, following non-Bluetooth changes without treating telephony input as an external mic. Other mic presets require an explicit preview tap, which stops any competing phone preview. During recording, all extra previews pause; the Sources waveforms use the recording itself. Protected call/playback tracks retain their independent helper path.
 
-If YouTube/media changes when using a headset source, stop that source or tap its preview waveform to stop monitoring. The app releases its own communication route when the last headset source ends. Settings offers preferred-headset selection, speech sample rates, disabling headset route preparation when a call app already owns it, disabling phone previews, and releasing an idle route. The app does not seize audio mode from another active call. The CMF/Samsung combination still needs physical acceptance; Android may reject the preferred input.
+If YouTube/media changes when using a headset source, stop that source or tap its preview waveform to stop monitoring. Hold Bluetooth mic until stopped is on by default: AudioScope keeps the requested headset route even if media is affected, and releases its own communication route only when the last headset preview/recording ends. Starting recording from a headset preview retains route ownership during the handoff. Record Bluetooth mic now starts directly without a preview. Settings offers preferred-headset selection, speech sample rates, disabling headset route preparation when a call app already owns it, disabling phone previews, and releasing an idle route. Android Telecom retains control during a managed phone call. Turning off Prepare headset call audio or Hold Bluetooth mic until stopped lets a call app manage the route; pinning can still fail if Android does not supply the requested input. Show each connected microphone adds Android-provided Bluetooth/USB/wired device names. Any Bluetooth Mic picks the preferred or first headset and holds that device; Android may only expose one active mic. The CMF/Samsung combination still needs physical acceptance; Android may reject the preferred input.
 
 ## Automatic call naming
 
@@ -54,7 +54,7 @@ The filename template supports {date}, {app}, {direction}, {contact}, {number}, 
 
 Open Settings → Background & offline recording. USB/Wireless state is read through the current helper; without a reachable helper the app shows Not verified rather than trusting a saved switch. USB debugging needs no connected cable. Keep Developer options enabled; switching debugging off or changing USB functions may stop a privileged helper.
 
-Wi-Fi-free helper restart is opt-in. Connect Embedded ADB over Wireless debugging, enable USB debugging, then choose Enable Wi-Fi-free restart. Android debugging restarts; AudioScope checks the authorized endpoint and warms a matching helper before saving current-boot readiness. Android's TCP listener may be accessible over a network, not only loopback. Reboot removes this setup: join a Wi-Fi network, which does not need internet, reconnect and enable it again. Restart helper without Wi-Fi uses the verified endpoint; it does not automatically re-arm calls. Disable requests USB-only ADB; if the device rejects it, toggle debugging in Developer options to close the listener.
+**Restart capture helper without Wi-Fi** is opt-in. Recording and a running helper already work offline without this option. Connect Embedded ADB over Wireless debugging, enable USB debugging, then choose Enable helper restart without Wi-Fi…. The confirmation explains that a randomized port is not a security boundary, traditional TCP ADB differs from Wireless debugging’s TLS transport, authorized keys can grant powerful shell access, and listeners can be reachable through network interfaces. Use trusted networks, revoke unknown debugging authorizations and disable the listener afterward. Android debugging restarts; AudioScope checks the authorized endpoint and warms a matching helper before saving current-boot readiness. Android's TCP listener may be accessible over a network, not only loopback. Reboot removes this setup: join a Wi-Fi network, which does not need internet, reconnect and enable it again. Restart helper without Wi-Fi uses the verified endpoint; it does not automatically re-arm calls. Disable requests USB-only ADB; if the device rejects it, toggle debugging in Developer options to close the listener.
 
 USB when screen unlocks offers charging only, debugging only, file/photo transfer, tethering and MIDI. Charging only can reduce USB renegotiation interruptions on affected phones; verify your device. AudioScope confirms changes and reads back the actual default where supported. With Shevery/Shizuku, use that manager's debugging controls.
 
@@ -63,3 +63,7 @@ The optional wireless guard runs with a persistent Disable guard notification. I
 Battery links explain Samsung Unrestricted and Sleeping/Deep sleeping apps. Optional reboot/update reminders ask you to reconnect and re-arm; they never start microphones by themselves. Force stop and OEM process removal can prevent background delivery. Always inspect actual armed/helper state after reopening.
 
 Playback app selection is under Advanced capture & diagnostics. It limits protected playback capture by an installed app's UID; this is not automatic per-app call detection or an automatic recording policy. Apps sharing a UID may share the filter. Policy changes apply after old pre-armed routes are disarmed.
+
+## Default mix and individual recordings
+
+Mono mix is enabled by default in 0.5, including when upgrading. Settings → Audio quality & formats can disable it or toggle Normalize track levels in mix. Normalization uses a capped peak adjustment before weighted mixing; it does not change the individual recordings. Sessions presents mix.wav first when available. Tap the recording to open its full-screen view and listen to all original source tracks. Format selection and public/custom folder exports continue to apply after capture.

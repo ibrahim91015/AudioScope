@@ -179,6 +179,7 @@ public class CaptureService extends Service {
             "routeRight",
             "stereo",
             "mix",
+            "normalizeMix",
             "mka",
             "codec",
             "bitrate",
@@ -188,6 +189,8 @@ public class CaptureService extends Service {
         Object value = ScopeApp.prefs().getAll().get(key);
         if (value != null) exportSettings.put(key, value);
       }
+      exportSettings.put("mix", ScopeApp.prefs().getBoolean("mix", true));
+      exportSettings.put("normalizeMix", ScopeApp.prefs().getBoolean("normalizeMix", true));
       exportSettings.put("saveTree", ScopeApp.prefs().getString("saveTree", ""));
       exportSettings.put("saveFolderName", StorageFolders.label());
       sessionName = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(new Date());
@@ -586,8 +589,8 @@ public class CaptureService extends Service {
                         if (!armed || !inCall() || active() || stopping) return;
                         String[] candidates =
                             ScopeApp.bridge == null
-                                ? new String[] {"mic"}
-                                : new String[] {"voice_playback", "mic", "voice_call"};
+                                ? new String[] {"any_phone_mic"}
+                                : new String[] {"voice_playback", "any_phone_mic", "voice_call"};
                         Intent capture =
                             new Intent()
                                 .setAction("RECORD")
@@ -692,6 +695,50 @@ public class CaptureService extends Service {
 
     private ICaptureBridge openedBridge;
     private boolean bluetoothLease;
+    private AudioDeviceInfo pinnedInput;
+    private long routeMismatchAt, lastRouteCheck, lastPreferredCheck;
+    private int lastRouteId = -1;
+
+    @android.annotation.SuppressLint(
+        "MissingPermission") // run() checks mic consent before opening; Android rejects revocation.
+    private boolean openLocal(AudioRecord.Builder builder) throws Exception {
+      int[] presets = source.flexiblePhone() ? new int[] {1, 0, 9, 6, 7} : new int[] {source.input};
+      Exception failure = null;
+      for (int preset : presets) {
+        if (!running || monitor && (active() || stopping || preparingAuto())) return false;
+        try {
+          if (!source.playback()) builder.setAudioSource(preset);
+          local = builder.build();
+          if (source.phoneMic() || source.bluetooth() || source.external()) {
+            pinnedInput = BluetoothRouting.select(source);
+            boolean preferred = pinnedInput != null && local.setPreferredDevice(pinnedInput);
+            if (!preferred && !source.flexiblePhone())
+              throw new IOException("Microphone route rejected by Android");
+          }
+          if (!running || monitor && (active() || stopping || preparingAuto())) return false;
+          if (local.getState() != AudioRecord.STATE_INITIALIZED)
+            throw new IOException("AudioRecord initialization failed");
+          local.startRecording();
+          if (local.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
+            throw new IOException("AudioRecord not recording");
+          if (source.flexiblePhone())
+            ScopeApp.log("INFO", "Any Phone Mic opened input preset " + preset);
+          return true;
+        } catch (Exception e) {
+          failure = e;
+          if (local != null) {
+            try {
+              local.stop();
+            } catch (Exception ignored) {
+            }
+            local.release();
+            local = null;
+          }
+          if (!source.flexiblePhone()) throw e;
+        }
+      }
+      throw new IOException("Any Phone Mic could not open a non-Bluetooth microphone", failure);
+    }
 
     void run() {
       if (!running) {
@@ -700,8 +747,11 @@ public class CaptureService extends Service {
       }
       try {
         ICaptureBridge bridge = ScopeApp.bridge;
-        openedBridge = bridge;
-        if (bridge != null && !source.phoneMic() && !source.bluetooth()) {
+        if (monitor && (active() || stopping || preparingAuto()))
+          throw new IllegalStateException(
+              "Another recording is in progress; monitoring is paused to protect it");
+        if (bridge != null && !source.phoneMic() && !source.bluetooth() && !source.external()) {
+          openedBridge = bridge;
           pipe = bridge.open(source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
           try (DataInputStream in =
               new DataInputStream(
@@ -756,39 +806,86 @@ public class CaptureService extends Service {
               != android.content.pm.PackageManager.PERMISSION_GRANTED)
             throw new SecurityException("Microphone permission was revoked");
           if (source.bluetooth()) bluetoothLease = BluetoothRouting.acquire(source);
-          local = b.build();
-          if (source.phoneMic() || source.bluetooth()) {
-            if (!local.setPreferredDevice(BluetoothRouting.select(source)))
-              throw new IOException("Microphone route rejected by Android");
-          }
-          if (local.getState() != 1) throw new IOException("AudioRecord initialization failed");
-          local.startRecording();
-          if (local.getRecordingState() != 3) throw new IOException("AudioRecord not recording");
+          if (!openLocal(b)) return;
+          if (!monitor && source.bluetooth()) BluetoothRouting.finishTransfer();
           rate = local.getSampleRate();
           channels = local.getChannelCount();
           beginConsumer();
-          long frame = 0;
+          long frame = 0, recorderFrameBase = 0;
           byte[] bytes = new byte[rate * channels * 2 / 50];
+          int recoveries = 0;
           while (running) {
             int n = local.read(bytes, 0, bytes.length);
+            if (n == AudioRecord.ERROR_DEAD_OBJECT
+                && source.flexiblePhone()
+                && running
+                && recoveries++ < 3) {
+              ScopeApp.log(
+                  "WARN", "Any Phone Mic: reopening lost input; same recording is retained");
+              local.release();
+              local = null;
+              if (!openLocal(b)) break;
+              recorderFrameBase = frame;
+              if (local.getSampleRate() != rate || local.getChannelCount() != channels)
+                throw new IOException(
+                    "Restarted microphone changed PCM format; recorded audio is retained");
+              routeMismatchAt = 0;
+              continue;
+            }
             if (n < 0) throw new IOException("Read error " + n);
             if (n == 0) continue;
+            long now = android.os.SystemClock.elapsedRealtime();
             AudioDeviceInfo route = local.getRoutedDevice();
-            if (source.phoneMic() || source.bluetooth()) {
-              BluetoothRouting.verify(source, route);
-              if (route == null) {
+            if (source.phoneMic() || source.bluetooth() || source.external()) {
+              // Use this recorder's configuration as corroboration, not a device-global guess.
+              AudioRecordingConfiguration config = local.getActiveRecordingConfiguration();
+              AudioDeviceInfo configured = config == null ? null : config.getAudioDevice();
+              if (BluetoothRouting.matches(source, configured, pinnedInput)
+                  && (!source.phoneMic()
+                      || route == null
+                      || !MicRoutePolicy.bluetooth(route.getType()))) route = configured;
+              if (source.bluetooth() && now - lastRouteCheck >= 500) {
+                BluetoothRouting.maintain();
+                lastRouteCheck = now;
+              }
+              boolean accepted = BluetoothRouting.matches(source, route, pinnedInput);
+              // Any Phone Mic tolerates an unreported route only while no headset input/route
+              // exists.
+              if (route == null
+                  && source.flexiblePhone()
+                  && BluetoothRouting.inputs().isEmpty()
+                  && !BluetoothRouting.busy()) accepted = true;
+              if (!accepted) {
+                if (routeMismatchAt == 0) routeMismatchAt = now;
+                if (pinnedInput != null && now - lastPreferredCheck >= 500) {
+                  local.setPreferredDevice(pinnedInput);
+                  lastPreferredCheck = now;
+                }
                 frame += n / (channels * 2);
-                if (frame > rate * 2L)
+                if (now - routeMismatchAt > 3000)
                   throw new IOException(
-                      "Microphone route unavailable; cannot verify the requested device");
-                continue;
+                      "Microphone route unavailable or changed to "
+                          + (route == null
+                              ? "unreported input"
+                              : route.getProductName() + " (type " + route.getType() + ")")
+                          + "; the requested device could not be restored. Try Any Phone Mic for"
+                          + " non-Bluetooth routing");
+                continue; // Never save confirmed wrong-device PCM.
+              }
+              routeMismatchAt = 0;
+            }
+            if (route != null) {
+              device = route.getProductName() + " • type " + route.getType();
+              if (lastRouteId != route.getId()) {
+                lastRouteId = route.getId();
+                ScopeApp.log("INFO", source.id + " route: " + device);
               }
             }
-            if (route != null) device = route.getProductName() + " • type " + route.getType();
             AudioTimestamp ts = new AudioTimestamp();
             long time = System.nanoTime() - n * 1000000000L / (rate * channels * 2);
             if (local.getTimestamp(ts, AudioTimestamp.TIMEBASE_MONOTONIC) == 0)
-              time = ts.nanoTime + (frame - ts.framePosition) * 1000000000L / rate;
+              time =
+                  ts.nanoTime + (frame - recorderFrameBase - ts.framePosition) * 1000000000L / rate;
             accept(new Chunk(Arrays.copyOf(bytes, n), time, frame));
             frame += n / (channels * 2);
           }
@@ -812,6 +909,7 @@ public class CaptureService extends Service {
         }
         try {
           BluetoothRouting.release(bluetoothLease);
+          if (!monitor && source.bluetooth()) BluetoothRouting.finishTransfer();
         } catch (Exception e) {
           ScopeApp.log("WARN", "Bluetooth route release: " + ShellBridge.root(e));
         }

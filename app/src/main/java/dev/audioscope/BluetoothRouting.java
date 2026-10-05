@@ -5,16 +5,14 @@ import android.content.pm.PackageManager;
 import android.media.*;
 import java.util.*;
 
-/**
- * Microphone device routing is explicit; normal inputs never request a Bluetooth communication
- * route.
- */
+/** Explicit headset ownership; ordinary previews never request a communication route. */
 public final class BluetoothRouting {
   private static int leases, oldMode;
   private static AudioDeviceInfo chosenOutput;
+  private static boolean transfer;
 
   public static boolean bluetooth(int type) {
-    return type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || type == AudioDeviceInfo.TYPE_BLE_HEADSET;
+    return MicRoutePolicy.bluetooth(type);
   }
 
   private static AudioManager audio() {
@@ -26,41 +24,64 @@ public final class BluetoothRouting {
         == PackageManager.PERMISSION_GRANTED;
   }
 
-  @android.annotation.SuppressLint("MissingPermission")
+  public static String key(AudioDeviceInfo d) {
+    String address = d.getAddress();
+    if (address.isEmpty() && bluetooth(d.getType()) && permitted()) {
+      for (AudioDeviceInfo output : audio().getAvailableCommunicationDevices())
+        if (same(d, output) && !output.getAddress().isEmpty()) {
+          address = output.getAddress();
+          break;
+        }
+    }
+    String identity =
+        address.isEmpty() ? d.getProductName() + ":" + d.getType() + ":" + d.getId() : address;
+    return UUID.nameUUIDFromBytes(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        .toString();
+  }
+
   public static List<AudioDeviceInfo> inputs() {
     List<AudioDeviceInfo> result = new ArrayList<>();
-    if (!permitted()) return result;
-    for (AudioDeviceInfo d : audio().getDevices(AudioManager.GET_DEVICES_INPUTS))
-      if (bluetooth(d.getType())) result.add(d);
+    if (permitted())
+      for (AudioDeviceInfo d : audio().getDevices(AudioManager.GET_DEVICES_INPUTS))
+        if (bluetooth(d.getType())) result.add(d);
     return result;
   }
 
-  /**
-   * Connected call-capable outputs also identify headsets whose input appears only after SCO opens.
-   */
+  public static List<AudioDeviceInfo> externalInputs() {
+    List<AudioDeviceInfo> result = new ArrayList<>();
+    for (AudioDeviceInfo d : audio().getDevices(AudioManager.GET_DEVICES_INPUTS))
+      if (MicRoutePolicy.external(d.getType())) result.add(d);
+    return result;
+  }
+
   public static List<AudioDeviceInfo> connected() {
     List<AudioDeviceInfo> result = inputs();
-    if (!permitted()) return result;
-    for (AudioDeviceInfo d : audio().getAvailableCommunicationDevices()) {
-      if (bluetooth(d.getType()) && result.stream().noneMatch(x -> same(x, d))) result.add(d);
-    }
+    if (permitted())
+      for (AudioDeviceInfo d : audio().getAvailableCommunicationDevices())
+        if (bluetooth(d.getType()) && result.stream().noneMatch(x -> same(x, d))) result.add(d);
     return result;
   }
 
-  private static boolean same(AudioDeviceInfo a, AudioDeviceInfo b) {
+  public static boolean same(AudioDeviceInfo a, AudioDeviceInfo b) {
+    if (a == null || b == null) return false;
     if (a.getId() == b.getId()) return true;
     if (!a.getAddress().isEmpty() && !b.getAddress().isEmpty())
       return a.getAddress().equals(b.getAddress());
-    return a.getProductName().toString().equals(b.getProductName().toString());
+    return a.getProductName().toString().equals(b.getProductName().toString())
+        && bluetooth(a.getType()) == bluetooth(b.getType());
   }
 
-  private static AudioDeviceInfo requested() {
-    List<AudioDeviceInfo> list = connected();
-    int preferred = ScopeApp.prefs().getInt("bluetoothInput", -1);
+  private static AudioDeviceInfo requested(Source source) {
+    List<AudioDeviceInfo> list = source.external() ? externalInputs() : connected();
+    if (!source.deviceKey().isEmpty()) {
+      for (AudioDeviceInfo d : list) if (key(d).equals(source.deviceKey())) return d;
+      throw new IllegalStateException(
+          "Requested microphone disconnected; reconnect " + source.title);
+    }
     String address = ScopeApp.prefs().getString("bluetoothInputAddress", "");
+    int id = ScopeApp.prefs().getInt("bluetoothInput", -1);
     for (AudioDeviceInfo d : list)
-      if (!address.isEmpty() && address.equals(d.getAddress())) return d;
-    for (AudioDeviceInfo d : list) if (d.getId() == preferred) return d;
+      if (!address.isEmpty() && address.equals(d.getAddress()) || d.getId() == id) return d;
     if (list.isEmpty())
       throw new IllegalStateException(
           "Bluetooth microphone disconnected or Nearby devices permission missing");
@@ -70,16 +91,19 @@ public final class BluetoothRouting {
   public static String signature() {
     StringBuilder s = new StringBuilder();
     for (AudioDeviceInfo d : connected())
-      s.append(d.getId()).append(':').append(d.getProductName()).append(';');
+      s.append(key(d)).append(':').append(d.getProductName()).append(';');
+    for (AudioDeviceInfo d : externalInputs())
+      s.append(key(d)).append(':').append(d.getProductName()).append(';');
     return s.toString();
   }
 
   public static String description() {
-    if (!permitted()) return "Allow Nearby devices to show connected Bluetooth microphone sources.";
     List<AudioDeviceInfo> list = connected();
     if (list.isEmpty())
-      return "No Bluetooth microphone connected. Connect your CMF earbuds with Calls enabled in"
-          + " Android Bluetooth settings.";
+      return permitted()
+          ? "No Bluetooth microphone connected. Enable Calls for your headset in Android Bluetooth"
+                + " settings."
+          : "Allow Nearby devices to show Bluetooth microphones.";
     StringBuilder s = new StringBuilder();
     for (AudioDeviceInfo d : list)
       s.append(d.getProductName())
@@ -93,15 +117,16 @@ public final class BluetoothRouting {
   }
 
   public static AudioDeviceInfo select(Source source) {
-    if (!source.bluetooth()) {
+    if (source.phoneMic()) {
       for (AudioDeviceInfo d : audio().getDevices(AudioManager.GET_DEVICES_INPUTS))
         if (d.getType() == AudioDeviceInfo.TYPE_BUILTIN_MIC) return d;
+      if (source.flexiblePhone()) return null;
       throw new IllegalStateException(
-          "Phone microphone route unavailable. No external microphone will be used.");
+          "Phone microphone route unavailable; no built-in microphone is listed");
     }
-    AudioDeviceInfo target = requested();
-    // Bluetooth's input can arrive a moment after an explicitly requested communication route.
-    for (int attempt = 0; attempt < 30; attempt++) {
+    AudioDeviceInfo target = requested(source);
+    if (source.external()) return target;
+    for (int attempt = 0; attempt < 40; attempt++) {
       for (AudioDeviceInfo d : inputs()) if (same(d, target)) return d;
       if (!busy()) break;
       try {
@@ -112,72 +137,115 @@ public final class BluetoothRouting {
       }
     }
     throw new IllegalStateException(
-        "Bluetooth microphone input unavailable; enable Calls for this headset, then retry"
-            + " monitoring");
+        "Bluetooth microphone input unavailable; enable Calls for this headset, then retry");
   }
 
   public static synchronized boolean acquire(Source source) {
     if (!source.bluetooth()) return false;
-    AudioDeviceInfo input = requested();
+    AudioDeviceInfo target = requested(source);
     if (!ScopeApp.prefs().getBoolean("bluetoothCommunication", true)) return false;
     if (leases > 0) {
+      if (!same(target, chosenOutput))
+        throw new IllegalStateException(
+            "Another Bluetooth microphone is in use; stop it before changing headset");
       leases++;
       return true;
     }
     AudioManager a = audio();
-    // Do not seize audio mode from a phone or video call owned by another application.
-    if (a.getMode() != AudioManager.MODE_NORMAL) return false;
+    // Telecom retains authority during a managed phone call. Use its existing route.
+    if (a.getMode() == AudioManager.MODE_IN_CALL) return false;
+    if (a.getMode() != AudioManager.MODE_NORMAL
+        && !ScopeApp.prefs().getBoolean("holdBluetoothMic", true)) return false;
     AudioDeviceInfo output = null;
     for (AudioDeviceInfo d : a.getAvailableCommunicationDevices())
-      if (bluetooth(d.getType())
-          && (d.getAddress().equals(input.getAddress())
-              || d.getProductName().toString().equals(input.getProductName().toString()))) {
+      if (bluetooth(d.getType()) && same(d, target)) {
         output = d;
         break;
       }
     if (output == null)
       throw new IllegalStateException(
-          "Bluetooth communication route unavailable; enable Calls for this headset in Android"
-              + " Bluetooth settings");
+          "Bluetooth communication route unavailable; enable the headset Calls profile");
     oldMode = a.getMode();
     a.setMode(AudioManager.MODE_IN_COMMUNICATION);
     if (!a.setCommunicationDevice(output)) {
       a.setMode(oldMode);
-      throw new IllegalStateException("Bluetooth communication route rejected by Android");
+      throw new IllegalStateException("Bluetooth microphone route rejected by Android");
     }
     chosenOutput = output;
     leases = 1;
     Notices.event(
-        "Bluetooth microphone activated",
-        "The headset may switch from media audio to call audio. Stop Bluetooth monitoring or"
-            + " recording to release it.",
+        "Bluetooth microphone held",
+        "The headset stays in call audio until its preview or recording stops. Music/YouTube"
+            + " playback may change.",
         "sources");
     return true;
+  }
+
+  public static synchronized void maintain() {
+    if (leases == 0
+        || chosenOutput == null
+        || !ScopeApp.prefs().getBoolean("holdBluetoothMic", true)) return;
+    AudioManager a = audio();
+    if (a.getMode() == AudioManager.MODE_IN_CALL) return;
+    AudioDeviceInfo output = null;
+    for (AudioDeviceInfo d : a.getAvailableCommunicationDevices())
+      if (same(d, chosenOutput)) {
+        output = d;
+        break;
+      }
+    if (output == null)
+      throw new IllegalStateException("Bluetooth microphone disconnected while active");
+    if (a.getMode() != AudioManager.MODE_IN_COMMUNICATION)
+      a.setMode(AudioManager.MODE_IN_COMMUNICATION);
+    if (!same(a.getCommunicationDevice(), output) && !a.setCommunicationDevice(output))
+      throw new IllegalStateException("Bluetooth microphone route could not be restored");
+  }
+
+  public static synchronized void reserveForRecording(String[] ids) {
+    if (transfer) return;
+    for (String id : ids)
+      if (Source.get(id).bluetooth()) {
+        transfer = acquire(Source.get(id));
+        return;
+      }
+  }
+
+  public static synchronized void finishTransfer() {
+    if (transfer) {
+      transfer = false;
+      release(true);
+    }
   }
 
   public static synchronized void release(boolean leased) {
     if (!leased || leases == 0 || --leases > 0) return;
     AudioManager a = audio();
-    a.clearCommunicationDevice();
+    // Clear only the route this app acquired, not another app's replacement.
+    if (same(a.getCommunicationDevice(), chosenOutput)) a.clearCommunicationDevice();
     if (a.getMode() == AudioManager.MODE_IN_COMMUNICATION) a.setMode(oldMode);
     chosenOutput = null;
     Notices.event(
         "Bluetooth microphone released",
-        "AudioScope released its headset route. Media audio can resume. If needed, pause and resume"
-            + " YouTube or reconnect the earbuds.",
+        "AudioScope released its headset route because the last preview/recording ended.",
         "sources");
   }
 
   public static void verify(Source source, AudioDeviceInfo actual) {
     if (actual == null) return;
-    if (source.phoneMic() && actual.getType() != AudioDeviceInfo.TYPE_BUILTIN_MIC)
+    if (source.phoneMic() && !MicRoutePolicy.acceptPhone(source.flexiblePhone(), actual.getType()))
       throw new IllegalStateException(
-          "Phone microphone route rejected; Android selected an external microphone. Capture"
-              + " stopped to protect headset media playback.");
-    if (source.bluetooth() && (!bluetooth(actual.getType()) || !same(actual, requested())))
-      throw new IllegalStateException(
-          "Bluetooth microphone route rejected; Android selected the phone microphone. No silent"
-              + " fallback is allowed.");
+          "Phone microphone route changed to "
+              + actual.getProductName()
+              + " (type "
+              + actual.getType()
+              + "). Bluetooth or an unsupported input is not allowed for this source");
+  }
+
+  public static boolean matches(Source source, AudioDeviceInfo actual, AudioDeviceInfo pinned) {
+    if (actual == null) return false;
+    if (source.bluetooth()) return bluetooth(actual.getType()) && same(actual, pinned);
+    if (source.external()) return same(actual, pinned);
+    return MicRoutePolicy.acceptPhone(source.flexiblePhone(), actual.getType());
   }
 
   public static synchronized boolean busy() {

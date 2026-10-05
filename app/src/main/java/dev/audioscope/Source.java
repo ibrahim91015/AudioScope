@@ -29,6 +29,16 @@ public final class Source {
       Collections.unmodifiableList(
           Arrays.asList(
               new Source(
+                  "any_phone_mic",
+                  "Any Phone Mic",
+                  "Starts with the regular Microphone preset. Follows non-Bluetooth mic changes"
+                      + " without failing; a connected wired/USB mic may be used. Bluetooth is"
+                      + " excluded.",
+                  "INPUT",
+                  1,
+                  -1,
+                  0xff76e2c3),
+              new Source(
                   "mic",
                   "Microphone",
                   "Sound around the phone and your voice.",
@@ -242,6 +252,24 @@ public final class Source {
     return id.startsWith("bluetooth_");
   }
 
+  public boolean external() {
+    return "EXTERNAL".equals(group);
+  }
+
+  public boolean flexiblePhone() {
+    return id.equals("any_phone_mic");
+  }
+
+  public boolean manualPreview() {
+    return bluetooth() || external() || phoneMic() && !flexiblePhone();
+  }
+
+  public String deviceKey() {
+    if (id.startsWith("bluetooth_device_")) return id.substring("bluetooth_device_".length());
+    if (id.startsWith("external_device_")) return id.substring("external_device_".length());
+    return "";
+  }
+
   public boolean phoneMic() {
     return "INPUT".equals(group) && !bluetooth();
   }
@@ -277,13 +305,71 @@ public final class Source {
 
   public static List<Source> available() {
     List<Source> result = new ArrayList<>(ALL);
-    if (!BluetoothRouting.connected().isEmpty()) result.addAll(BLUETOOTH);
+    if (!BluetoothRouting.connected().isEmpty()) {
+      result.add(
+          new Source(
+              "bluetooth_any",
+              "Any Bluetooth Mic",
+              "Uses the selected or first connected headset and holds that device until stopped."
+                  + " Monitoring is explicit and can interrupt media playback.",
+              "BLUETOOTH",
+              1,
+              -1,
+              0xffbe9bff));
+      result.addAll(BLUETOOTH);
+    }
+    if (ScopeApp.prefs().getBoolean("showDeviceMics", true)) {
+      for (android.media.AudioDeviceInfo d : BluetoothRouting.connected())
+        result.add(deviceSource(d, true));
+      for (android.media.AudioDeviceInfo d : BluetoothRouting.externalInputs())
+        result.add(deviceSource(d, false));
+    }
     return result;
+  }
+
+  private static final Map<String, Source> DEVICES = new java.util.concurrent.ConcurrentHashMap<>();
+
+  private static Source deviceSource(android.media.AudioDeviceInfo d, boolean bt) {
+    Source s =
+        new Source(
+            (bt ? "bluetooth_device_" : "external_device_") + BluetoothRouting.key(d),
+            d.getProductName().toString() + (bt ? " · Bluetooth mic" : " · External mic"),
+            "Device-specific input. Android may expose only one active headset microphone at a"
+                + " time. Start monitoring or Record explicitly. Device type "
+                + d.getType(),
+            bt ? "BLUETOOTH" : "EXTERNAL",
+            1,
+            -1,
+            0xffbe9bff);
+    DEVICES.put(s.id, s);
+    return s;
   }
 
   public static Source get(String id) {
     for (Source s : ALL) if (s.id.equals(id)) return s;
     for (Source s : BLUETOOTH) if (s.id.equals(id)) return s;
+    if (id.equals("bluetooth_any"))
+      return new Source(
+          id,
+          "Any Bluetooth Mic",
+          "Explicit headset input, held until stopped.",
+          "BLUETOOTH",
+          1,
+          -1,
+          0xffbe9bff);
+    Source dynamic = DEVICES.get(id);
+    if (dynamic != null) return dynamic;
+    if (id.matches("(bluetooth|external)_device_[a-zA-Z0-9_-]+")) {
+      for (Source s : available()) if (s.id.equals(id)) return s;
+      return new Source(
+          id,
+          "Disconnected microphone",
+          "Reconnect this microphone before recording.",
+          id.startsWith("bluetooth_") ? "BLUETOOTH" : "EXTERNAL",
+          1,
+          -1,
+          0xffbe9bff);
+    }
     throw new IllegalArgumentException("Unknown source: " + id);
   }
 }

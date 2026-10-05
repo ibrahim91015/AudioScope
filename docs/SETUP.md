@@ -1,19 +1,35 @@
-# Setup and offline capture
+# AudioScope 0.2 setup
 
-1. Install the release APK on Android 13+. Allow microphone and notifications. Open Sources for live metering, or Capture for selected-source recording.
-2. For privileged routes, choose one backend in Settings. Shizuku/Shevery must already have a running service; press Connect and authorize AudioScope.
-3. Alternatively, enable Android Developer options and Wireless debugging. Keep Wi-Fi enabled for initial setup. Open Pair device with pairing code. Enter that dialog's pairing port and six-digit code in AudioScope and press Pair this phone. Return to the main Wireless debugging screen and enter its **connection** port, then Connect & start offline daemon. Pairing and connection ports differ and can change.
-4. Wait for the header to show the embedded daemon connection. The detached shell process transports audio through Binder and local pipes. Recording no longer depends on Wi-Fi. Reboot ends the process; reconnect after reboot. OEM process killing or ADB configuration changes can also end it.
-5. Optional off-Wi-Fi restart switches ADB to TCP port 5555. This can expose an authorized-key ADB listener on network interfaces and may interrupt Shizuku. The app explains this before enabling it. Disable TCP listener when finished. This optional mode clears after reboot.
+Install the 0.2 APK over 0.1 to preserve data. Both use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
 
-The embedded ADB pairing path is implemented but still needs testing on the target Samsung phone. The emulator validation bootstrapped the same detached daemon through desktop ADB, so it does not establish that Samsung's pairing UI, permissions or offline process survival behave identically.
+## Embedded ADB pairing
 
-On Sources, monitoring opens all 27 listed routes concurrently without saving files. Some will fail or be silent; this is expected when the platform denies capture or routes are inactive. The app does not automatically retry failed metering continuously. Leave/re-enter Sources after changing permissions or backend. Leaving the app stops previews, while active recordings remain in the foreground service. Selecting another tab stops previews.
+1. Enable Android Developer options if necessary (tap Build number seven times in About phone / Software information).
+2. Grant AudioScope notification and microphone permissions. Settings → Embedded ADB → Pair in Wireless debugging.
+3. AudioScope starts its pairing foreground service and opens Android's Wireless debugging page, with a highlighted Developer-options fallback if the direct activity is unavailable.
+4. Enable Wireless debugging and approve Android's Wi-Fi network prompt.
+5. Tap **Pair device with pairing code** in Android Settings. Keep this dialog open.
+6. Pull down notifications. In AudioScope's pairing notification, tap **Enter code**, enter the six digits and send. This does not switch away from Android Settings. The pairing port is discovered automatically.
+7. After Android accepts the code, AudioScope discovers the connection port and starts its offline helper. Wait for **Offline helper connected** and return to AudioScope.
 
-Press a source's gray dot to start saving that source. Its dot turns red only when a recording reader is running. Press the red dot to stop that source; stopping the last source finalizes the session. Record all attempts all listed sources. Its red state means there is an active session; press it to stop and save the session. Format changes take effect for the next recording segment. WAV originals are retained for PCM, AAC and Opus selections.
+If the phone is already paired, use Connect paired phone to rediscover the changing connection port. Setup has a Cancel action and a five-minute timeout. If discovery fails on a particular ROM/network, Advanced setup offers manual ports and connection. Never confuse the pairing port with the connection port; Android uses different sockets.
 
-For playback policies, open Capture and Arm loopback before the target app starts playback or joins a call. Sources monitoring also opens these policies when a helper is connected. Sample-rate/channel/UID changes disarm the existing policies. Disarm all policies is available in Settings; stopping a source does not automatically unregister its loopback policy.
+## Shevery / Shizuku
 
-Keep battery optimization permissive for AudioScope and the chosen helper if the phone kills background capture. Notification permission enables visible action controls. Files and diagnostics remain local; use Sessions sharing to export a ZIP. Check actual saved audio before trusting any route for an important recording.
+Start the installed manager's service. In AudioScope Settings tap Connect, then authorize AudioScope when prompted. AudioScope explicitly requests missed Binder delivery and binds a user service versioned to the installed APK. Open helper manager launches Shevery first if installed. Connection or authorization problems produce repair messages. If a manager remains incompatible, Embedded ADB provides a separate capture path.
 
-The Lab pipeline test generates 440/880 Hz tones with a 100 ms offset, verifies stereo length, writes a normalized mix and two-track MKA, and exercises AAC and Opus containers. Generated tones are explicitly labeled and do not test telephony capture. Probes and sweeps do use actual selected recording sources.
+## Recording a call
+
+For Wi-Fi/Teams/app calls, compare VoIP / Wi-Fi call playback and Microphone on Sources. Advanced setup can arm communication playback before joining a call. Automatic calls also pre-arms this playback policy when a helper is connected and starts VoIP playback + microphone + carrier capture when a call is detected.
+
+For carrier calls, probe both-sides or separate local/remote sources. Audio Policy rejected means that privilege or OEM policy refused that route; it does not mean all sources fail. AudioRecord could not open can reflect an unavailable route, sample format or too many concurrent inputs. Try one source, 48 kHz Mono, and inspect actual signal.
+
+Automatic call mode must be armed while AudioScope is visible. It watches phone state (optional permission) and communication audio mode. Some calling apps/OEMs do not expose a reliable mode; test your actual app. It does not arm automatically after reboot. The persistent notification gives clear status and Disarm controls.
+
+## Offline and files
+
+The app processes audio locally. A connected detached helper uses Binder and continues without Wi-Fi; pairing/reconnection still needs Android's Wireless debugging transport. Optional TCP restart on port 5555 is in Advanced setup and is separate from ordinary capture.
+
+Default format is in Settings. Changing it resets every source selector. Individual overrides can be set afterward. Encoded copies are produced on stop. Public copies appear under Recordings/AudioScope (PCM under Downloads/AudioScope) through MediaStore and should be listed by file managers' Recent view. Private WAV originals, timing, bookmarks and logs are accessible through Sessions → Files & details / Share session.
+
+Notifications are separated into recording controls, playback, setup, problems and routine updates. Enable Android notifications for inline pairing. Alerts stores notification details inside the app as well.

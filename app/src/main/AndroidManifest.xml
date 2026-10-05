@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -13,6 +15,8 @@
     <application android:name=".ScopeApp" android:label="AudioScope" android:icon="@drawable/ic_scope" android:theme="@style/AppTheme" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
         <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="microphone|mediaProjection"/>
+        <service android:name=".PairingService" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Local wireless-debugging discovery and notification reply pairing while the user remains in Android Settings"/></service>
+        <service android:name=".PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>
         <provider android:name=".BridgeProvider" android:authorities="dev.audioscope.bridge" android:exported="true"/>
         <provider android:name=".ShareProvider" android:authorities="dev.audioscope.files" android:exported="false" android:grantUriPermissions="true"/>
         <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="dev.audioscope.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>

@@ -8,4 +8,5 @@ interface ICaptureBridge {
     String inspect();
     void shutdown();
     void destroy();
+    int apiVersion();
 }

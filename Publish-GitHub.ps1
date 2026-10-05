@@ -1,17 +1,20 @@
 ﻿param(
     [string]$RepositoryName = 'AudioScope',
-    [string]$Apk = (Join-Path $PSScriptRoot '../AudioScope-0.1.0.apk'),
-    [string]$SourceZip = (Join-Path $PSScriptRoot '../AudioScope-0.1.0-source.zip')
+    [string]$Version = '0.2.0',
+    [string]$Apk = (Join-Path $PSScriptRoot ("../AudioScope-$Version.apk")),
+    [string]$SourceZip = (Join-Path $PSScriptRoot ("../AudioScope-$Version-source.zip"))
 )
 $ErrorActionPreference = 'Stop'
 $expectedAccount = 'ibrahim91015'
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version.' }
+$tag = "v$Version"
 if ($RepositoryName -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid repository name.' }
 if (-not (Test-Path -LiteralPath $Apk) -or -not (Test-Path -LiteralPath $SourceZip)) { throw 'Build APK and source ZIP first.' }
 Push-Location $PSScriptRoot
 try {
     if (git status --porcelain) { throw 'Commit source changes before publishing.' }
-    git rev-parse --verify refs/tags/v0.1.0 > $null
-    if ($LASTEXITCODE) { throw 'Release tag v0.1.0 is missing.' }
+    git rev-parse --verify "refs/tags/$tag" > $null
+    if ($LASTEXITCODE) { throw "Release tag $tag is missing." }
     # Capture credentials in memory only. Never print or save the token.
     $credentialLines = "protocol=https`nhost=github.com`nusername=$expectedAccount`n`n" | git credential fill
     if ($LASTEXITCODE) { throw 'Local Git credential lookup failed. Run in your normal Windows terminal and sign in with Git Credential Manager.' }
@@ -35,12 +38,14 @@ try {
     if (-not $origin) { git remote add origin $repo.clone_url; if ($LASTEXITCODE) { throw 'Cannot set origin.' } }
     git -c "credential.username=$expectedAccount" push -u origin main
     if ($LASTEXITCODE) { throw 'Source push failed. No force push was attempted.' }
-    git -c "credential.username=$expectedAccount" push origin v0.1.0
+    git -c "credential.username=$expectedAccount" push origin $tag
     if ($LASTEXITCODE) { throw 'Tag push failed.' }
-    try { $release = Invoke-RestMethod "$api/releases/tags/v0.1.0" -Headers $headers }
+    try { $release = Invoke-RestMethod "$api/releases/tags/$tag" -Headers $headers }
     catch {
         if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
-        $body = @{ tag_name='v0.1.0'; name='AudioScope 0.1.0 - experimental Android build'; prerelease=$true; body='Dark purple Material 3 controls, live Sources metering, per-source formats, independent tracks, offline daemon support and diagnostics. Emulator tests passed; Samsung carrier/Teams/Wi-Fi Calling and embedded pairing still require physical-device validation. See README and docs/VALIDATION.md.' } | ConvertTo-Json
+        $notesFile = Join-Path $PSScriptRoot "docs/RELEASE-$Version.md"
+        $notes = if (Test-Path -LiteralPath $notesFile) { Get-Content -LiteralPath $notesFile -Raw -Encoding UTF8 } else { "AudioScope $Version experimental Android build. See README and docs/VALIDATION.md." }
+        $body = @{ tag_name=$tag; name="AudioScope $Version - experimental Android build"; prerelease=$true; body=$notes } | ConvertTo-Json
         $release = Invoke-RestMethod "$api/releases" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     foreach ($path in @($Apk,$SourceZip)) {

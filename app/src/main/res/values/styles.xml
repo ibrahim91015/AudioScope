@@ -8,4 +8,5 @@
         <item name="android:navigationBarColor">#141019</item><item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowLightNavigationBar">false</item><item name="android:colorAccent">#BE9BFF</item>
     </style>
+<style name="NavText"><item name="android:textSize">11sp</item><item name="android:fontFamily">sans</item></style>
 </resources>

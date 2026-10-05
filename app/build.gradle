@@ -1,9 +1,11 @@
 plugins { id 'com.android.application' }
 android {
+    useLibrary 'android.test.runner', false
+    useLibrary 'android.test.base', false
     namespace 'dev.audioscope'
     compileSdk 35
     buildToolsVersion '34.0.0'
-    defaultConfig { applicationId 'dev.audioscope'; minSdk 33; targetSdk 35; versionCode 1; versionName '0.1.0' }
+    defaultConfig { applicationId 'dev.audioscope'; minSdk 33; targetSdk 35; versionCode 2; versionName '0.2.0'; testInstrumentationRunner 'android.test.InstrumentationTestRunner' }
     buildFeatures { aidl true; buildConfig true }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     signingConfigs {

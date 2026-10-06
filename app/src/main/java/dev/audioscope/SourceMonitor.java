@@ -19,19 +19,56 @@ public final class SourceMonitor {
     return bluetoothManual.contains(id);
   }
 
+  public static String reason(Source source, boolean requested) {
+    CaptureService.Track existing = CaptureService.tracks.get(source.id);
+    boolean same =
+        CaptureService.startingSources.contains(source.id)
+            || existing != null && (existing.running || existing.done.getCount() != 0);
+    boolean input =
+        CaptureService.startingSources.stream().anyMatch(id -> Source.get(id).physicalInput())
+            || CaptureService.tracks.values().stream()
+                .anyMatch(t -> t.running && t.source.physicalInput());
+    return PreviewPolicy.reason(
+        ScopeApp.prefs().getString("recordingPreviews", "manual"),
+        requested,
+        CaptureService.active(),
+        CaptureService.stopping || CaptureService.preparingAuto(),
+        same,
+        source.physicalInput(),
+        input,
+        source.id.equals("remote_submix"));
+  }
+
+  public void pauseConflicts(Source source) {
+    for (String id : new ArrayList<>(meters.keySet()))
+      if (id.equals(source.id)
+          || source.physicalInput() && Source.get(id).physicalInput()
+          || id.equals("remote_submix")) release(id);
+  }
+
   public void startBluetooth(String id) {
-    if (CaptureService.active() || CaptureService.stopping || CaptureService.preparingAuto()) {
-      blocked.put(id, "Another recording is in progress; monitoring is paused to protect it");
+    String conflict = reason(Source.get(id), true);
+    if (!conflict.isEmpty()) {
+      blocked.put(id, conflict);
       Notices.error("Monitoring paused", blocked(id), "sources");
       return;
     }
-    // Only one physical-input preview may own the phone/headset at a time.
-    bluetoothManual.clear();
-    bluetoothManual.add(id);
     enabled = true;
     ScopeApp.IO.execute(
         () -> {
-          release(id);
+          synchronized (this) {
+            String currentConflict = reason(Source.get(id), true);
+            if (!wanted.contains(id) || !currentConflict.isEmpty()) {
+              if (!currentConflict.isEmpty()) blocked.put(id, currentConflict);
+              return;
+            }
+            release(id);
+            // Publish the request only after teardown; reconciliation must not open and then
+            // immediately close the new preview during this handoff.
+            if (Source.get(id).physicalInput())
+              bluetoothManual.removeIf(x -> Source.get(x).physicalInput());
+            bluetoothManual.add(id);
+          }
           refresh();
         });
   }
@@ -93,7 +130,7 @@ public final class SourceMonitor {
 
   public synchronized void reconcile() {
     if (!enabled) return;
-    if (CaptureService.active() || CaptureService.stopping || CaptureService.preparingAuto()) {
+    if (CaptureService.stopping || CaptureService.preparingAuto()) {
       closeAll();
       for (String id : wanted)
         if (!CaptureService.tracks.containsKey(id))
@@ -107,30 +144,41 @@ public final class SourceMonitor {
     android.os.IBinder current = ScopeApp.bridge == null ? null : ScopeApp.bridge.asBinder();
     if (current != backend) {
       for (String id : new ArrayList<>(meters.keySet()))
-        if (Source.get(id).privileged()) release(id);
+        if (Source.get(id).privileged() || Source.get(id).systemSelectedMic()) release(id);
       backend = current;
     }
     Set<String> requested = wanted;
+    bluetoothManual.retainAll(requested);
+    boolean manualInput = bluetoothManual.stream().anyMatch(id -> Source.get(id).physicalInput());
     for (String id : new ArrayList<>(meters.keySet()))
       if (!requested.contains(id)
           || Source.get(id).manualPreview() && !manual(id)
-          || !bluetoothManual.isEmpty()
+          || manualInput
               && !manual(id)
               && (Source.get(id).phoneMic()
                   || Source.get(id).bluetooth()
                   || Source.get(id).external())
-          || Source.get(id).phoneMic() && !ScopeApp.prefs().getBoolean("phoneMicPreview", true))
-        release(id);
+          || !reason(Source.get(id), manual(id)).isEmpty()
+          || Source.get(id).phoneMic()
+              && !manual(id)
+              && !ScopeApp.prefs().getBoolean("phoneMicPreview", true)) release(id);
     for (Source source : Source.available()) {
-      if (!enabled || CaptureService.active() || CaptureService.stopping) break;
+      if (!enabled || CaptureService.stopping) break;
+      String conflict = reason(source, manual(source.id));
+      if (!conflict.isEmpty()) {
+        blocked.put(source.id, conflict);
+        continue;
+      }
       boolean input = source.phoneMic() || source.bluetooth() || source.external();
-      if (input && !bluetoothManual.isEmpty() && !manual(source.id)) {
+      if (input && manualInput && !manual(source.id)) {
         release(source.id);
         blocked.put(
             source.id, "Another microphone preview owns the input; stop it to resume this preview");
         continue;
       }
-      if (source.phoneMic() && !ScopeApp.prefs().getBoolean("phoneMicPreview", true)) continue;
+      if (source.phoneMic()
+          && !manual(source.id)
+          && !ScopeApp.prefs().getBoolean("phoneMicPreview", true)) continue;
       if (!requested.contains(source.id) || source.manualPreview() && !manual(source.id)) continue;
       CaptureService.Track recording = CaptureService.tracks.get(source.id);
       if (CaptureService.active()
@@ -138,6 +186,7 @@ public final class SourceMonitor {
           && (recording.running || recording.done.getCount() != 0)) continue;
       if (!meters.containsKey(source.id)) {
         CaptureService.Track meter = new CaptureService.Track(source, null);
+        meter.previewRequested = manual(source.id);
         meters.put(source.id, meter);
         ScopeApp.IO.execute(meter::run);
       }

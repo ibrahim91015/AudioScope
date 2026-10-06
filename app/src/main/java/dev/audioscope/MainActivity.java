@@ -83,7 +83,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
                 "selected", new LinkedHashSet<>(Arrays.asList("any_phone_mic", "voice_playback"))));
     getWindow().setStatusBarColor(BG);
     getWindow().setNavigationBarColor(BG);
-    if (saved == null) routeIntent(getIntent());
+    if (saved == null || getIntent() != null && getIntent().hasExtra("screen"))
+      routeIntent(getIntent());
     render();
     showNotice(getIntent());
   }
@@ -99,6 +100,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   private void routeIntent(Intent i) {
     if (i == null) return;
     String screen = i.getStringExtra("screen");
+    if ("settings".equals(screen)) settingsPage = "home";
     if (screen != null)
       tab =
           screen.equals("sources")
@@ -445,13 +447,11 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     two(
         preset,
         button("Voice memo", CARD, () -> selectPreset("any_phone_mic")),
-        button("Wi-Fi / app call", CARD, () -> selectPreset("voice_playback", "any_phone_mic")));
+        button(
+            "Wi-Fi / app call", CARD, () -> selectPreset("voice_playback", "communication_input")));
     two(
         preset,
-        button(
-            "Carrier call",
-            CARD,
-            () -> selectPreset("voice_call", "any_phone_mic", "voice_playback")),
+        button("Carrier call", CARD, () -> selectPreset("uplink", "downlink")),
         button("Media + mic", CARD, () -> selectPreset("media", "any_phone_mic")));
     two(
         preset,
@@ -1344,6 +1344,14 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
                 }
               }));
       appearance.addView(colors);
+      toggle(
+          appearance,
+          "Use 24-hour time",
+          "Off by default: clock times use AM/PM. Applies to all saved recordings, session"
+              + " metadata, alerts and app logs; new exported file names follow this choice."
+              + " Elapsed recording/playback durations keep their normal format.",
+          "clock24",
+          false);
       appearance.addView(text("App text size", 14, INK));
       String[] sizes = {"Small · 85%", "Standard · 100%", "Large · 115%"};
       float[] scales = {.85f, 1f, 1.15f};
@@ -1868,6 +1876,66 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
       body.addView(notifications);
     }
     if (settingsPage.equals("advanced")) {
+      section("SOURCE MONITORING");
+      LinearLayout previews = card();
+      previews.addView(text("Previews while recording", 16, INK));
+      previews.addView(
+          text(
+              "Default: pause extra previews, then let Start monitoring resume an unrelated source."
+                  + " Mic previews that conflict with a recording stay blocked. A source already"
+                  + " recording uses its recording waveform.",
+              14,
+              MUTED));
+      String[] previewModes = {"manual", "paused", "automatic"};
+      String mode = ScopeApp.prefs().getString("recordingPreviews", "manual");
+      Spinner policy =
+          spinner(
+              new String[] {
+                "Pause · allow per-source resume",
+                "Always pause until recording ends",
+                "Continue non-conflicting previews"
+              },
+              Arrays.asList(previewModes).indexOf(mode));
+      policy.setOnItemSelectedListener(
+          listener(
+              i -> {
+                ScopeApp.prefs().edit().putString("recordingPreviews", previewModes[i]).apply();
+                monitors.refresh();
+              }));
+      previews.addView(policy);
+      toggle(
+          previews,
+          "Use helper for Communication mic",
+          "Avoid ordinary-app foreground/background mic priority when the capture helper is"
+              + " connected. Android still controls the actual communication device. Without a"
+              + " helper, local recording can be silenced by a call app.",
+          "helperCommunicationMic",
+          true);
+      toggle(
+          previews,
+          "Recover a silenced Communication mic",
+          "During a call, try helper MIC if Android reports silencing or the communication preset"
+              + " sends only digital zeros for five seconds. The actual preset and device are shown"
+              + " below Communication mic in Detailed view. Recovery stays on the new preset to"
+              + " avoid churn.",
+          "communicationRecovery",
+          true);
+      numberSetting(previews, "Recent source activity · seconds", "recommendHoldSeconds", 5, 1, 60);
+      previews.addView(
+          text(
+              "Keep a source recommended for this long after measured noise. Temporary ordering"
+                  + " settles for 0.7 seconds and returns to your saved layout after 15 seconds of"
+                  + " quiet or when recommendations are off.",
+              14,
+              MUTED));
+      numberSetting(
+          previews,
+          "Minimum time between source moves · seconds",
+          "recommendMoveSeconds",
+          4,
+          2,
+          30);
+      body.addView(previews);
       section("MANUAL CONNECTION");
       LinearLayout content = card();
       content.addView(text("Manual ports · fallback when automatic discovery fails", 16, INK));
@@ -1978,7 +2046,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
           content,
           "Signal-aware carrier fallback",
           "If carrier capture stays silent, also try separated call tracks and VoIP playback +"
-              + " mic.",
+              + " Communication mic.",
           "fallback",
           false);
       content.addView(
@@ -2538,11 +2606,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
       String[] names = new String[history.length()];
       for (int i = 0; i < history.length(); i++) {
         JSONObject n = history.getJSONObject(i);
-        names[i] =
-            new java.text.SimpleDateFormat("MMM d · HH:mm", Locale.US)
-                    .format(new Date(n.getLong("time")))
-                + "\n"
-                + n.getString("title");
+        names[i] = TimeDisplay.date(n.getLong("time")) + "\n" + n.getString("title");
       }
       new AlertDialog.Builder(this)
           .setTitle("Notification history")
@@ -2603,7 +2667,8 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     control.setContentDescription(label);
     control.setMinHeight(dp(48));
     control.setChecked(ScopeApp.prefs().getBoolean(key, fallback));
-    control.setEnabled(!CaptureService.active() && !CaptureService.stopping);
+    control.setEnabled(
+        key.equals("clock24") || !CaptureService.active() && !CaptureService.stopping);
     control.setTrackTintList(
         new android.content.res.ColorStateList(
             new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},

@@ -44,6 +44,36 @@ public class AudioPipelineTest {
   }
 
   @Test
+  public void carrierMixStronglyBalancesQuietAndLoudPartiesWithoutChangingOriginals()
+      throws Exception {
+    File quiet = constant("uplink.wav", 4800, (short) 500),
+        loud = constant("downlink.wav", 4800, (short) 10000);
+    try (PcmRouter.Input a = new PcmRouter.Input("uplink", quiet, 0, 0, 1);
+        PcmRouter.Input b = new PcmRouter.Input("downlink", loud, 0, 0, 1)) {
+      assertEquals(5193, a.reader.sample(0) * CarrierMixer.level(a.reader), 1);
+      assertEquals(5193, b.reader.sample(0) * CarrierMixer.level(b.reader), 1);
+      CarrierMixer.export(new File(folder, "carrier_mix.wav"), Arrays.asList(a, b), 48000);
+      try (WavFile.Reader mix = new WavFile.Reader(new File(folder, "carrier_mix.wav"))) {
+        assertEquals(10386, mix.sample(100), 2);
+        assertEquals(1, mix.channels);
+      }
+      assertEquals(500, a.reader.sample(0), 0);
+      assertEquals(10000, b.reader.sample(0), 0);
+    }
+  }
+
+  @Test
+  public void carrierNormalizationCapsBoostLeavesSilenceAndLimitsPeaks() throws Exception {
+    try (WavFile.Reader quiet = new WavFile.Reader(constant("quiet.wav", 1024, (short) 100));
+        WavFile.Reader silent = new WavFile.Reader(constant("silent.wav", 1024, (short) 0))) {
+      assertEquals(32, CarrierMixer.level(quiet), 0);
+      assertEquals(1, CarrierMixer.level(silent), 0);
+    }
+    assertTrue(CarrierMixer.limit(100000) < 30000);
+    assertTrue(CarrierMixer.limit(-100000) > -30000);
+  }
+
+  @Test
   public void wavHeaderAndInterruptedRepairPreserveSamples() throws Exception {
     File f = constant("raw.wav", 4800, (short) 500);
     try (RandomAccessFile r = new RandomAccessFile(f, "rw")) {

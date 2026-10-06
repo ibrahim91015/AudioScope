@@ -10,4 +10,6 @@ interface ICaptureBridge {
     void destroy();
     int apiVersion();
     String systemSetup(String action, String value);
+    ParcelFileDescriptor openCommunication(int rate, int channels, boolean callActive, boolean recover);
+    String sourceStatus(String source, boolean callActive);
 }

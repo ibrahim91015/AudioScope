@@ -8,6 +8,21 @@ import java.util.zip.*;
 import org.json.*;
 
 public final class Exports {
+  public static boolean preferVoipMix(JSONObject manifest) {
+    if (!manifest.optBoolean("automatic")) return false;
+    boolean voip = false, up = false, down = false;
+    JSONArray tracks = manifest.optJSONArray("tracks");
+    if (tracks != null)
+      for (int i = 0; i < tracks.length(); i++) {
+        JSONObject t = tracks.optJSONObject(i);
+        if (t == null || !t.optBoolean("everAudible")) continue;
+        if (t.optString("id").equals("voice_playback")) voip = true;
+        if (t.optString("id").equals("uplink")) up = true;
+        if (t.optString("id").equals("downlink")) down = true;
+      }
+    return voip && !(up && down);
+  }
+
   public static void finish(File folder) throws Exception {
     JSONObject manifest = new JSONObject(read(new File(folder, "session.json")));
     JSONArray tracks = manifest.getJSONArray("tracks");
@@ -27,6 +42,11 @@ public final class Exports {
       }
       if (inputs.isEmpty()) return;
       int rate = 48000;
+      List<PcmRouter.Input> carrier = new ArrayList<>();
+      for (PcmRouter.Input input : inputs)
+        if (input.id.equals("uplink") || input.id.equals("downlink")) carrier.add(input);
+      if (!carrier.isEmpty())
+        CarrierMixer.export(new File(folder, "carrier_mix.wav"), carrier, rate);
       if (manifest.optBoolean("stereo"))
         PcmRouter.export(
             new File(folder, "stereo.wav"),
@@ -35,10 +55,14 @@ public final class Exports {
             manifest.optString("routeLeft"),
             manifest.optString("routeRight"),
             false);
-      if (manifest.optBoolean("mix"))
+      if (manifest.optBoolean("mix") && (carrier.isEmpty() || carrier.size() != inputs.size()))
         PcmRouter.export(
             new File(folder, "mix.wav"),
-            inputs,
+            preferVoipMix(manifest)
+                ? inputs.stream()
+                    .filter(in -> !in.id.equals("uplink") && !in.id.equals("downlink"))
+                    .collect(java.util.stream.Collectors.toList())
+                : inputs,
             rate,
             "",
             "",
@@ -65,7 +89,7 @@ public final class Exports {
       }
       String codec = manifest.optString("codec", "WAV");
       if (codec.equals("AAC") || codec.equals("Opus"))
-        for (String name : new String[] {"stereo.wav", "mix.wav"}) {
+        for (String name : new String[] {"stereo.wav", "mix.wav", "carrier_mix.wav"}) {
           File f = new File(folder, name);
           if (f.isFile())
             try {

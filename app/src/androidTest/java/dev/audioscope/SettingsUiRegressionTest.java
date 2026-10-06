@@ -103,7 +103,7 @@ public final class SettingsUiRegressionTest extends InstrumentationTestCase {
     long until = System.currentTimeMillis() + 10000;
     while (ScopeApp.bridge == null && System.currentTimeMillis() < until) Thread.sleep(100);
     assertNotNull("Start the emulator helper fixture before this class", ScopeApp.bridge);
-    assertEquals(3, ScopeApp.bridge.apiVersion());
+    assertEquals(4, ScopeApp.bridge.apiVersion());
     org.json.JSONObject state = new org.json.JSONObject(ScopeApp.bridge.systemSetup("READ", ""));
     String usb = state.getString("usb");
     assertTrue(usb.equals("0") || usb.equals("1"));

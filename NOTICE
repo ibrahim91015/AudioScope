@@ -43,3 +43,9 @@ Version 0.5 independently implements flexible non-Bluetooth mic capture,
 preview/recording isolation, named external inputs, explicit headset leases and
 route recovery, capped peak normalization and default mix presentation. It
 expands offline TCP listener explanations and opt-in security information.
+
+Version 0.5.2 adds independently implemented helper-owned communication capture
+with call-safe MIC recovery, actual-input status, separate carrier normalization,
+configurable safe previews, temporary recent-activity ordering, app clock styles
+and full session metadata. Recovery design was informed by CallVault's
+VoipCaptureSession at the upstream commit above; attribution remains intact.

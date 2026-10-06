@@ -8,9 +8,9 @@ public final class SourceLayout {
       new LinkedHashSet<>(
           Arrays.asList(
               "voice_playback",
+              "communication_input",
               "any_phone_mic",
               "mic",
-              "voice_call",
               "uplink",
               "downlink",
               "media"));
@@ -22,7 +22,8 @@ public final class SourceLayout {
     String order =
         ScopeApp.prefs()
             .getString(
-                "sourceOrder", "voice_playback,any_phone_mic,mic,voice_call,uplink,downlink,media");
+                "sourceOrder",
+                "voice_playback,communication_input,any_phone_mic,mic,uplink,downlink,media");
     for (String id : order.split(","))
       try {
         if (available.stream().anyMatch(x -> x.id.equals(id)) && used.add(id))

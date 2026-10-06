@@ -66,7 +66,9 @@ public final class Source {
                   "communication_input",
                   "Communication mic",
                   "Voice processing preset. Follows Android's chosen communication input, including"
-                      + " Bluetooth, wired or USB microphones. May affect media playback.",
+                      + " Bluetooth, wired or USB microphones. The helper can fall back to MIC if"
+                      + " call policy silences this preset; the actual input is shown below. May"
+                      + " affect media playback.",
                   "INPUT",
                   7,
                   -1,
@@ -263,6 +265,10 @@ public final class Source {
 
   public boolean systemSelectedMic() {
     return id.equals("communication_input");
+  }
+
+  public boolean physicalInput() {
+    return !playback();
   }
 
   public boolean manualPreview() {

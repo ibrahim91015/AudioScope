@@ -22,6 +22,7 @@ public final class LibraryPanel {
   private final Actions actions;
   private final LinearLayout host;
   private final List<PlayerRow> players = new ArrayList<>();
+  private boolean clock24;
 
   private static final class PlayerRow {
     File file;
@@ -56,6 +57,7 @@ public final class LibraryPanel {
   }
 
   private void render() {
+    clock24 = TimeDisplay.twentyFour();
     host.removeAllViews();
     players.clear();
     TextView heading = text(selectedSession == null ? "Sessions" : "Recording", 20, Ui.INK);
@@ -118,7 +120,7 @@ public final class LibraryPanel {
                   + (count == 1 ? " audio track · " : " audio tracks · ")
                   + (folder.getName().startsWith("self-test")
                       ? "Generated test tones"
-                      : recordedAt(folder)),
+                      : recordedAt(folder, manifest)),
               13,
               Ui.MUTED));
       JSONObject call = manifest.optJSONObject("call");
@@ -133,9 +135,14 @@ public final class LibraryPanel {
           c.addView(text(String.join(" · ", identity), 13, ThemePalette.accent(activity)));
       }
       LinearLayout tracks = Ui.column(activity);
+      boolean preferVoip = Exports.preferVoipMix(manifest);
       Arrays.sort(
           wavs,
-          Comparator.<File>comparingInt(f -> f.getName().equals("mix.wav") ? 0 : 1)
+          Comparator.<File>comparingInt(
+                  f ->
+                      f.getName().equals(preferVoip ? "mix.wav" : "carrier_mix.wav")
+                          ? 0
+                          : f.getName().equals(preferVoip ? "carrier_mix.wav" : "mix.wav") ? 1 : 2)
               .thenComparing(File::getName));
       int shown = 0;
       for (File wav : wavs)
@@ -176,6 +183,7 @@ public final class LibraryPanel {
       buttons.addView(files, right);
       c.addView(buttons);
       host.addView(c);
+      host.addView(SessionMetadata.view(activity, folder, manifest));
     }
   }
 
@@ -200,6 +208,7 @@ public final class LibraryPanel {
     c.setPadding(0, dp(selectedSession == null ? 4 : 14), 0, dp(selectedSession == null ? 4 : 14));
     String label = base;
     if (base.equals("mix")) label = "Mono mix";
+    if (base.equals("carrier_mix")) label = "Carrier mix · strong normalization";
     try {
       if (!base.equals("mix")) label = Source.get(base.replaceFirst("_\\d+$", "")).title;
     } catch (Exception ignored) {
@@ -290,6 +299,10 @@ public final class LibraryPanel {
   }
 
   public void update() {
+    if (clock24 != TimeDisplay.twentyFour()) {
+      render();
+      return;
+    }
     for (PlayerRow r : players) {
       boolean current = r.file.equals(PlaybackService.file);
       r.play.setText(current && PlaybackService.playing ? "Ⅱ" : "▶");
@@ -314,15 +327,8 @@ public final class LibraryPanel {
     }
   }
 
-  private String recordedAt(File folder) {
-    try {
-      java.text.SimpleDateFormat parser =
-          new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US);
-      return new java.text.SimpleDateFormat("MMM d · HH:mm", Locale.US)
-          .format(parser.parse(folder.getName()));
-    } catch (Exception e) {
-      return folder.getName();
-    }
+  private String recordedAt(File folder, JSONObject manifest) {
+    return TimeDisplay.date(manifest.optLong("timestampUnixMs", sessionTime(folder)));
   }
 
   private void rename(File folder) {

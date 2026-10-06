@@ -59,6 +59,26 @@ public class ScopeApp extends Application {
   public void onCreate() {
     super.onCreate();
     app = this;
+    if (!prefs().getBoolean("carrierSplit052", false)) {
+      Set<String> previousDefaults = new HashSet<>();
+      Set<String> oldCommon =
+          new HashSet<>(
+              Arrays.asList(
+                  "voice_playback",
+                  "any_phone_mic",
+                  "mic",
+                  "voice_call",
+                  "uplink",
+                  "downlink",
+                  "media"));
+      for (Source source : Source.ALL)
+        if (!oldCommon.contains(source.id)) previousDefaults.add(source.id);
+      Set<String> oldHidden = prefs().getStringSet("hiddenSources", null);
+      if (oldHidden != null && oldHidden.equals(previousDefaults))
+        prefs().edit().remove("hiddenSources").apply();
+      SourceLayout.hide("voice_call", true);
+      prefs().edit().putBoolean("carrierSplit052", true).apply();
+    }
     if (!prefs().getBoolean("micRouting05", false)) {
       android.content.SharedPreferences.Editor e =
           prefs().edit().putBoolean("micRouting05", true).putBoolean("mix", true);
@@ -140,7 +160,7 @@ public class ScopeApp extends Application {
     if (bridge != null && bridge.asBinder().equals(b)) return;
     ICaptureBridge incoming = ICaptureBridge.Stub.asInterface(b);
     try {
-      if (incoming.apiVersion() != 3) throw new IllegalStateException("Old helper version");
+      if (incoming.apiVersion() != 4) throw new IllegalStateException("Old helper version");
     } catch (Exception e) {
       backend = "Reconnect helper after update";
       log("WARN", "Old helper detected; restart it in Settings");
@@ -324,7 +344,7 @@ public class ScopeApp extends Application {
     StringBuilder b = new StringBuilder();
     for (String s : logs)
       if (filter.isEmpty() || s.toLowerCase(Locale.US).contains(filter.toLowerCase(Locale.US)))
-        b.append(s).append('\n');
+        b.append(TimeDisplay.log(s)).append('\n');
     return b.toString();
   }
 }

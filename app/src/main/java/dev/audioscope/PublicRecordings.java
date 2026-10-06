@@ -28,7 +28,9 @@ public final class PublicRecordings {
     String result =
         CallNames.filename(
             template,
-            folder.getName(),
+            manifest.optLong("timestampUnixMs") > 0
+                ? TimeDisplay.file(manifest.optLong("timestampUnixMs"))
+                : folder.getName(),
             app,
             direction,
             call.optString("contact", ""),

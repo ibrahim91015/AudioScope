@@ -29,10 +29,17 @@ public final class SourcePanel {
   private String bluetoothSignature = BluetoothRouting.signature();
   private long lastDevices;
   private List<String> recommended = new ArrayList<>();
+  private final SourceActivityOrder activityOrder = new SourceActivityOrder();
+  private LinearLayout visibleList;
+  private final Map<String, View> visibleCards = new LinkedHashMap<>();
+  private List<Source> visibleSources = new ArrayList<>();
+  private List<String> displayedOrder = new ArrayList<>();
+  private int density;
+  private long lastMonitorRefresh;
 
   private static final class Row {
     MaterialButton record, preview;
-    TextView status;
+    TextView status, route, name;
     WaveformView wave;
     Spinner format;
     double score = -120;
@@ -62,6 +69,8 @@ public final class SourcePanel {
   private void render() {
     host.removeAllViews();
     rows.clear();
+    visibleCards.clear();
+    displayedOrder.clear();
     recommended.clear();
     int accent = ThemePalette.accent(activity);
     LinearLayout heading = Ui.row(activity);
@@ -81,6 +90,7 @@ public final class SourcePanel {
     host.addView(heading);
     String[] views = {"Detailed", "Comfortable", "Compact", "Mini"};
     int mode = ScopeApp.prefs().getInt("sourceView", 1);
+    density = mode;
     Spinner view = Ui.spinner(activity, views, mode);
     view.setContentDescription("Source view density");
     view.setOnItemSelectedListener(
@@ -181,7 +191,12 @@ public final class SourcePanel {
     Set<String> hidden = SourceLayout.hidden();
     List<Source> visible = new ArrayList<>(), concealed = new ArrayList<>();
     for (Source s : SourceLayout.ordered()) (hidden.contains(s.id) ? concealed : visible).add(s);
-    addCards(visible, mode, false);
+    visibleSources = visible;
+    visibleList = Ui.column(activity);
+    host.addView(visibleList);
+    for (Source source : visible) visibleCards.put(source.id, card(source, mode, false));
+    layoutVisible(
+        visible.stream().map(x -> x.id).collect(java.util.stream.Collectors.toList()), false);
     MaterialButton fold =
         Ui.button(
             activity,
@@ -328,6 +343,7 @@ public final class SourcePanel {
     line.addView(r.record, new LinearLayout.LayoutParams(dp(control), dp(control)));
     if (mode == 2) {
       TextView name = text(shortName(s), 12, Ui.INK);
+      r.name = name;
       name.setSingleLine(true);
       name.setEllipsize(android.text.TextUtils.TruncateAt.END);
       name.setPadding(dp(6), 0, dp(4), 0);
@@ -339,7 +355,7 @@ public final class SourcePanel {
         new LinearLayout.LayoutParams(
             0, dp(mode == 2 ? 20 : mode == 3 ? 28 : mode == 1 ? 32 : 44), 1);
     wp.leftMargin = dp(8);
-    if (s.manualPreview()) {
+    {
       r.preview =
           Ui.button(
               activity,
@@ -361,7 +377,9 @@ public final class SourcePanel {
                 }
               });
       line.addView(r.preview, new LinearLayout.LayoutParams(0, -2, 1));
-      r.wave.setVisibility(View.GONE);
+      boolean pausedPreview = s.manualPreview() || !SourceMonitor.reason(s, false).isEmpty();
+      r.preview.setVisibility(pausedPreview ? View.VISIBLE : View.GONE);
+      r.wave.setVisibility(pausedPreview ? View.GONE : View.VISIBLE);
     }
     line.addView(r.wave, wp);
     r.wave.setContentDescription(s.title + " live waveform; tap for source details");
@@ -370,6 +388,7 @@ public final class SourcePanel {
     if (mode != 2) {
       LinearLayout info = Ui.row(activity);
       TextView name = text(mode == 0 ? s.title : shortName(s), mode == 3 ? 13 : 15, Ui.INK);
+      r.name = name;
       name.setTypeface(null, Typeface.BOLD);
       info.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
       name.setOnClickListener(v -> showDetails(s));
@@ -387,7 +406,13 @@ public final class SourcePanel {
       r.status.setEllipsize(android.text.TextUtils.TruncateAt.END);
       r.status.setOnClickListener(v -> showDetails(s));
       c.addView(r.status);
-      if (mode == 0) c.addView(text(s.detail, 13, Ui.MUTED));
+      if (mode == 0) {
+        c.addView(text(s.detail, 13, Ui.MUTED));
+        if (s.systemSelectedMic()) {
+          r.route = text("Actual communication input appears when this source starts.", 13, Ui.INK);
+          c.addView(r.route);
+        }
+      }
     }
     if (s.bluetooth()) c.addView(text("May interrupt non-call media audio.", 12, Ui.MUTED));
     // Compact mode keeps its waveform thin; all formats and errors remain in the detail sheet.
@@ -438,7 +463,9 @@ public final class SourcePanel {
 
   private CaptureService.Track track(String id) {
     CaptureService.Track t = CaptureService.tracks.get(id);
-    return CaptureService.active() && t != null ? t : monitor.get(id);
+    return CaptureService.active() && t != null && (t.running || monitor.get(id) == null)
+        ? t
+        : monitor.get(id);
   }
 
   private void record(Source s) {
@@ -521,7 +548,79 @@ public final class SourcePanel {
     return result;
   }
 
+  private void layoutVisible(List<String> order, boolean animate) {
+    if (order.equals(displayedOrder)) return;
+    Map<String, int[]> before = new HashMap<>();
+    if (animate && Ui.motion())
+      for (String id : displayedOrder) {
+        View card = visibleCards.get(id);
+        int[] xy = new int[2];
+        card.getLocationOnScreen(xy);
+        before.put(id, xy);
+      }
+    for (View card : visibleCards.values()) {
+      card.animate().cancel();
+      card.setTranslationX(0);
+      card.setTranslationY(0);
+      if (card.getParent() instanceof android.view.ViewGroup)
+        ((android.view.ViewGroup) card.getParent()).removeView(card);
+    }
+    visibleList.removeAllViews();
+    for (int i = 0; i < order.size(); ) {
+      if (density != 3) {
+        visibleList.addView(visibleCards.get(order.get(i++)));
+        continue;
+      }
+      LinearLayout pair = Ui.row(activity);
+      for (int column = 0; column < 2 && i < order.size(); column++) {
+        View card = visibleCards.get(order.get(i++));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
+        lp.setMargins(0, 0, column == 0 ? dp(4) : 0, dp(6));
+        pair.addView(card, lp);
+      }
+      if (pair.getChildCount() == 1)
+        pair.addView(new View(activity), new LinearLayout.LayoutParams(0, 1, 1));
+      visibleList.addView(pair);
+    }
+    displayedOrder = new ArrayList<>(order);
+    if (!before.isEmpty()) {
+      android.view.ViewTreeObserver observer = visibleList.getViewTreeObserver();
+      LinearLayout animatedList = visibleList;
+      Map<String, View> animationCards = new HashMap<>(visibleCards);
+      observer.addOnPreDrawListener(
+          new android.view.ViewTreeObserver.OnPreDrawListener() {
+            public boolean onPreDraw() {
+              if (observer.isAlive()) observer.removeOnPreDrawListener(this);
+              if (!animatedList.isAttachedToWindow()) return true;
+              for (String id : order) {
+                int[] old = before.get(id);
+                if (old == null) continue;
+                View card = animationCards.get(id);
+                int[] now = new int[2];
+                card.getLocationOnScreen(now);
+                card.setTranslationX(old[0] - now[0]);
+                card.setTranslationY(old[1] - now[1]);
+                card.animate()
+                    .translationX(0)
+                    .translationY(0)
+                    .setDuration(260)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                    .start();
+              }
+              return true;
+            }
+          });
+    }
+  }
+
   public void update() {
+    long now = android.os.SystemClock.elapsedRealtime();
+    long hold = ScopeApp.prefs().getInt("recommendHoldSeconds", 5) * 1000L;
+    boolean auto = ScopeApp.prefs().getBoolean("autoSuggest", false);
+    if (now - lastMonitorRefresh > 1000) {
+      lastMonitorRefresh = now;
+      monitor.refresh();
+    }
     if (android.os.SystemClock.elapsedRealtime() - lastDevices > 1500) {
       lastDevices = android.os.SystemClock.elapsedRealtime();
       String current = BluetoothRouting.signature();
@@ -545,7 +644,7 @@ public final class SourcePanel {
       r.wave.recording(recording && !CaptureService.paused);
       r.wave.update(t);
       if (r.preview != null) {
-        boolean watching = recording || monitor.manual(e.getKey()) && t != null && t.running;
+        boolean watching = recording || t != null && t.running && t.error.isEmpty();
         r.wave.setVisibility(watching ? View.VISIBLE : View.GONE);
         r.wave.setContentDescription(
             recording
@@ -565,6 +664,24 @@ public final class SourcePanel {
       }
       if (r.format != null) r.format.setEnabled(!CaptureService.active());
       String blocked = monitor.blocked(e.getKey());
+      if (t != null) activityOrder.observe(e.getKey(), t.lastAudibleMs);
+      boolean recent =
+          auto && !activityOrder.recent(Collections.singleton(e.getKey()), now, hold).isEmpty();
+      if (r.name != null) Ui.tint(r.name, recent ? ThemePalette.accent(activity) : Ui.INK);
+      if (r.route != null) {
+        String route =
+            t == null
+                ? "No communication input open. Android chooses the device when started."
+                : "Actually using: "
+                    + t.device
+                    + "\n"
+                    + t.captureBackend
+                    + " · "
+                    + t.actualPreset
+                    + (t.systemSilenced ? "\nAndroid is silencing this input during the call." : "")
+                    + (t.routeNote.isEmpty() ? "" : "\n" + t.routeNote);
+        if (!route.contentEquals(r.route.getText())) r.route.setText(route);
+      }
       String status =
           t == null
               ? !blocked.isEmpty()
@@ -583,6 +700,7 @@ public final class SourcePanel {
                               ? "Signal detected"
                               : "No signal yet",
                       t.db);
+      if (recent) status = "Recent activity · " + status;
       if (r.status != null && !status.contentEquals(r.status.getText())) {
         r.status.setText(status);
         r.status.setTextColor(
@@ -592,25 +710,30 @@ public final class SourcePanel {
       r.score = t != null && t.running && t.error.isEmpty() ? r.score * .75 + t.db * .25 : -120;
     }
     recommended.clear();
-    Map<String, Double> signals = new LinkedHashMap<>();
-    for (Map.Entry<String, Row> entry : rows.entrySet()) {
-      CaptureService.Track t = track(entry.getKey());
-      if (t != null && t.running && t.error.isEmpty() && t.nonzero > 0)
-        signals.put(entry.getKey(), entry.getValue().score);
-    }
-    recommended.addAll(
-        SourceRecommendations.select(signals, ScopeApp.prefs().getInt("silenceDb", -60)));
+    recommended.addAll(activityOrder.recent(rows.keySet(), now, hold));
     if (!recommended.isEmpty()) {
       List<String> names = new ArrayList<>();
       for (String id : recommended) names.add(Source.get(id).title);
       suggestion.setText(
-          "Suggested · "
+          "Active in the last "
+              + (hold / 1000)
+              + " seconds · "
               + recommended.size()
               + " sources\n"
               + String.join(" · ", names)
-              + "\n"
-              + "All have measured audio near the strongest signal. Separate tracks may"
-              + " overlap.");
-    } else suggestion.setText("No active signal yet. Start a call or play audio.");
+              + "\nActive visible sources move up temporarily. Your saved layout is unchanged.");
+    } else
+      suggestion.setText("No recent activity. Your saved layout returns after 15 quiet seconds.");
+    List<String> saved =
+        visibleSources.stream().map(x -> x.id).collect(java.util.stream.Collectors.toList());
+    layoutVisible(
+        activityOrder.order(
+            saved,
+            auto && !editing,
+            now,
+            hold,
+            ScopeApp.prefs().getInt("recommendMoveSeconds", 4) * 1000L,
+            15000),
+        true);
   }
 }

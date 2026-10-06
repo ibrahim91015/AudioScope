@@ -1,6 +1,6 @@
-# AudioScope 0.5 setup
+# AudioScope 0.5.2 setup
 
-Install the 0.5 APK over an earlier release to preserve data. All releases use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
+Install the 0.5.2 APK over an earlier release to preserve data. All releases use the same signing key. Finish a current recording before updating. Reconnect the helper after an update; an old helper is detected and stopped so capture uses matching code.
 
 ## Embedded ADB pairing
 
@@ -67,3 +67,13 @@ Playback app selection is under Advanced capture & diagnostics. It limits protec
 ## Default mix and individual recordings
 
 Mono mix is enabled by default in 0.5, including when upgrading. Settings → Audio quality & formats can disable it or toggle Normalize track levels in mix. Normalization uses a capped peak adjustment before weighted mixing; it does not change the individual recordings. Sessions presents mix.wav first when available. Tap the recording to open its full-screen view and listen to all original source tracks. Format selection and public/custom folder exports continue to apply after capture.
+
+## 0.5.2 call capture and source previews
+
+Reconnect the helper after updating: bridge API 4 provides Communication mic capture and actual-input status. Automatic app/identified Wi-Fi calls request VoIP playback + Communication mic. Cellular calls request separate uplink/downlink and make a carrier-only mix with strong gated RMS normalization; originals remain available. Wi-Fi telephony transport can be unreported, so failed/quiet carrier tracks also check the VoIP routes. Test actual audibility on your phone.
+
+Advanced capture & diagnostics → Use helper for Communication mic defaults on. Its recovery tries the communication preset without claiming private capture, and during a call can use helper MIC after reported silencing or five seconds of digital zeros. This can trigger during a genuinely quiet call. Disable recovery for strict preset experiments. The actual device/preset/backend is shown under Communication mic in Detailed Sources and saved in metadata. Local capture without a helper can still be silenced by a call app.
+
+Previews while recording defaults to pause with explicit per-source resume. Always pause and Continue non-conflicting previews are alternatives. A live recording's waveform is reused, and a competing mic/duplicate source cannot unpause. Hiding a source releases its preview ownership. Recent source activity defaults to five seconds, with at least four seconds between temporary moves and a 0.7-second settling delay. The saved layout returns after fifteen quiet seconds.
+
+Appearance → Use 24-hour time is off by default. Clock displays use AM/PM, including existing Sessions and all clock-valued metadata. Elapsed durations/raw identifiers keep their technical formats. Full-screen recordings end with the complete saved metadata and file inventory; values can be selected/copied.

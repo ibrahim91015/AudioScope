@@ -15,6 +15,19 @@ public final class BluetoothRouting {
     return MicRoutePolicy.bluetooth(type);
   }
 
+  public static String inputDescription(AudioDeviceInfo d) {
+    if (d == null) return "Android has not reported an input device";
+    String kind =
+        bluetooth(d.getType())
+            ? "Bluetooth microphone"
+            : d.getType() == AudioDeviceInfo.TYPE_BUILTIN_MIC
+                ? "Built-in phone microphone"
+                : d.getType() == AudioDeviceInfo.TYPE_TELEPHONY
+                    ? "Telephony input"
+                    : MicRoutePolicy.external(d.getType()) ? "Wired / USB input" : "Android input";
+    return kind + " · " + d.getProductName() + " (type " + d.getType() + ")";
+  }
+
   private static AudioManager audio() {
     return ScopeApp.app.getSystemService(AudioManager.class);
   }

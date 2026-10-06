@@ -19,7 +19,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
 
   public int apiVersion() {
     check();
-    return 3;
+    return 4;
   }
 
   private final int allowedUid;
@@ -153,7 +153,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
         int mask = channels == 2 ? AudioFormat.CHANNEL_IN_STEREO : AudioFormat.CHANNEL_IN_MONO;
         int min = AudioRecord.getMinBufferSize(rate, mask, 2);
         if (min < 0) throw new IllegalArgumentException("Unsupported format");
-        record = new AudioRecord(s.input, rate, mask, 2, Math.max(min * 4, rate * channels / 5));
+        record = inputRecord(s.input, rate, channels);
       }
       if (record == null || record.getState() != AudioRecord.STATE_INITIALIZED) {
         if (record != null) record.release();
@@ -185,6 +185,81 @@ public class ShellBridge extends ICaptureBridge.Stub {
     if (!pinned.contains(id)) {
       PlaybackPolicy policy = policies.remove(id);
       if (policy != null) policy.close();
+    }
+  }
+
+  @android.annotation.SuppressLint("MissingPermission")
+  private static AudioRecord inputRecord(int preset, int rate, int channels) {
+    int mask = channels == 2 ? AudioFormat.CHANNEL_IN_STEREO : AudioFormat.CHANNEL_IN_MONO;
+    int min = AudioRecord.getMinBufferSize(rate, mask, AudioFormat.ENCODING_PCM_16BIT);
+    if (min <= 0) throw new IllegalArgumentException("Unsupported input format");
+    if (preset == 7)
+      return new AudioRecord.Builder()
+          .setAudioSource(preset)
+          .setPrivacySensitive(false)
+          .setAudioFormat(
+              new AudioFormat.Builder()
+                  .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                  .setSampleRate(rate)
+                  .setChannelMask(mask)
+                  .build())
+          .setBufferSizeInBytes(Math.max(min * 4, rate * channels / 5))
+          .build();
+    return new AudioRecord(preset, rate, mask, 2, Math.max(min * 4, rate * channels / 5));
+  }
+
+  public synchronized ParcelFileDescriptor openCommunication(
+      int rate, int channels, boolean callActive, boolean recover) {
+    check();
+    try {
+      ParcelFileDescriptor fd = open("communication_input", rate, channels, -1);
+      Pump p = pumps.get("communication_input");
+      p.communication = true;
+      p.callActive = callActive;
+      p.recover = recover;
+      return fd;
+    } catch (IllegalStateException e) {
+      Pump old = pumps.get("communication_input");
+      if (!recover || !callActive || old != null && old.active) throw e;
+      long identity = Binder.clearCallingIdentity();
+      try {
+        AudioRecord record = inputRecord(1, rate, channels);
+        ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createReliablePipe();
+        Pump p = new Pump(record, pipe[1]);
+        p.communication = true;
+        p.callActive = true;
+        p.recover = true;
+        p.note = "Communication preset could not open; using call-safe helper MIC";
+        try {
+          p.start();
+          pumps.put("communication_input", p);
+          return pipe[0];
+        } catch (Throwable failure) {
+          record.release();
+          pipe[0].close();
+          pipe[1].close();
+          throw failure;
+        }
+      } catch (Throwable failure) {
+        throw new IllegalStateException(root(failure));
+      } finally {
+        Binder.restoreCallingIdentity(identity);
+      }
+    }
+  }
+
+  public synchronized String sourceStatus(String id, boolean callActive) {
+    check();
+    long identity = Binder.clearCallingIdentity();
+    try {
+      Pump p = pumps.get(id);
+      if (p == null) return "{}";
+      if (p.communication) p.callActive = callActive;
+      return p.describe().toString();
+    } catch (Exception e) {
+      return "{}";
+    } finally {
+      Binder.restoreCallingIdentity(identity);
     }
   }
 
@@ -300,7 +375,11 @@ public class ShellBridge extends ICaptureBridge.Stub {
   }
 
   private static final class Pump {
-    final AudioRecord record;
+    volatile AudioRecord record;
+    final int rate, channels;
+    volatile boolean communication, callActive, recover;
+    volatile String note = "";
+    volatile int preset;
     final ParcelFileDescriptor fd;
     final ArrayBlockingQueue<Packet> queue = new ArrayBlockingQueue<>(100);
     volatile boolean active = true;
@@ -310,6 +389,9 @@ public class ShellBridge extends ICaptureBridge.Stub {
 
     Pump(AudioRecord r, ParcelFileDescriptor f) {
       record = r;
+      rate = r.getSampleRate();
+      channels = r.getChannelCount();
+      preset = r.getAudioSource();
       fd = f;
     }
 
@@ -321,28 +403,63 @@ public class ShellBridge extends ICaptureBridge.Stub {
           new Thread(
               () -> {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
-                byte[] b =
-                    new byte
-                        [Math.max(
-                            4096, record.getSampleRate() * record.getChannelCount() * 2 / 50)];
+                byte[] b = new byte[Math.max(4096, rate * channels * 2 / 50)];
+                long zeroSince = 0, silencedSince = 0, frameBase = 0;
+                int restarts = 0;
                 try {
                   while (active) {
                     int n = record.read(b, 0, b.length);
+                    if (!active) break;
+                    if (n == AudioRecord.ERROR_DEAD_OBJECT
+                        && communication
+                        && recover
+                        && restarts++ < 3) {
+                      record.release();
+                      record = inputRecord(callActive ? 1 : preset, rate, channels);
+                      record.startRecording();
+                      preset = record.getAudioSource();
+                      frameBase = frames;
+                      note = "Microphone was lost; helper reopened it within the same track";
+                      zeroSince = silencedSince = 0;
+                      continue;
+                    }
                     if (n < 0) throw new IOException("AudioRecord.read=" + n);
                     if (n == 0) continue;
+                    if (communication && recover && callActive && preset == 7) {
+                      long now = android.os.SystemClock.elapsedRealtime();
+                      boolean zero = true;
+                      for (int i = 0; i < n; i++)
+                        if (b[i] != 0) {
+                          zero = false;
+                          break;
+                        }
+                      zeroSince = zero ? zeroSince == 0 ? now : zeroSince : 0;
+                      AudioRecordingConfiguration config = record.getActiveRecordingConfiguration();
+                      boolean silenced = config != null && config.isClientSilenced();
+                      silencedSince = silenced ? silencedSince == 0 ? now : silencedSince : 0;
+                      if (silencedSince != 0 && now - silencedSince >= 1500
+                          || zeroSince != 0 && now - zeroSince >= 5000) {
+                        record.stop();
+                        record.release();
+                        record = inputRecord(1, rate, channels);
+                        record.startRecording();
+                        preset = 1;
+                        frameBase = frames;
+                        note =
+                            "Call policy silenced/zero-filled VOICE_COMMUNICATION; using call-safe"
+                                + " helper MIC";
+                        android.util.Log.i("AudioScopeDaemon", note);
+                        continue;
+                      }
+                    }
                     long first = frames;
-                    frames += n / (record.getChannelCount() * 2);
+                    frames += n / (channels * 2);
                     AudioTimestamp ts = new AudioTimestamp();
-                    long time =
-                        System.nanoTime()
-                            - n
-                                * 1000000000L
-                                / (record.getSampleRate() * record.getChannelCount() * 2);
+                    long time = System.nanoTime() - n * 1000000000L / (rate * channels * 2);
                     if (record.getTimestamp(ts, AudioTimestamp.TIMEBASE_MONOTONIC)
                         == AudioRecord.SUCCESS)
                       time =
-                          ts.nanoTime
-                              + (first - ts.framePosition) * 1000000000L / record.getSampleRate();
+                          ts.nanoTime + (first - frameBase - ts.framePosition) * 1000000000L / rate;
                     Packet p = new Packet(Arrays.copyOf(b, n), time, first);
                     if (!queue.offer(p)) dropped++;
                   }
@@ -361,8 +478,8 @@ public class ShellBridge extends ICaptureBridge.Stub {
                         new BufferedOutputStream(
                             new ParcelFileDescriptor.AutoCloseOutputStream(fd), 32768))) {
                   out.writeInt(0x41534350);
-                  out.writeInt(record.getSampleRate());
-                  out.writeInt(record.getChannelCount());
+                  out.writeInt(rate);
+                  out.writeInt(channels);
                   out.flush();
                   while (active || !queue.isEmpty()) {
                     Packet p = queue.poll(100, TimeUnit.MILLISECONDS);
@@ -409,6 +526,20 @@ public class ShellBridge extends ICaptureBridge.Stub {
       j.put("queue_dropped", dropped);
       j.put("error", error);
       j.put("active", active);
+      j.put(
+          "preset",
+          preset == 7
+              ? "VOICE_COMMUNICATION (7)"
+              : preset == 1 ? "MIC (1) · call-safe input" : "Input preset " + preset);
+      j.put("note", note);
+      try {
+        AudioRecordingConfiguration config = record.getActiveRecordingConfiguration();
+        j.put("silenced", config != null && config.isClientSilenced());
+        AudioDeviceInfo d = record.getRoutedDevice();
+        if (d == null && config != null) d = config.getAudioDevice();
+        j.put("device", BluetoothRouting.inputDescription(d));
+      } catch (Exception ignored) {
+      }
       return j;
     }
   }

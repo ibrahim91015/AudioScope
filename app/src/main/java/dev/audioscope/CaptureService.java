@@ -15,6 +15,7 @@ import org.json.*;
 public class CaptureService extends Service {
   public static volatile CaptureService instance;
   public static final Map<String, Track> tracks = new ConcurrentHashMap<>();
+  public static final Set<String> startingSources = ConcurrentHashMap.newKeySet();
   private static final List<Track> allTracks = new CopyOnWriteArrayList<>();
   public static volatile boolean paused, stopping, recordAllRequested;
 
@@ -43,6 +44,19 @@ public class CaptureService extends Service {
   private JSONObject callIdentity = new JSONObject();
   private long captureWallStart;
   private boolean automaticLabel;
+  private boolean carrierCapture;
+
+  private boolean carrierCall() {
+    int voice = 0;
+    try {
+      if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
+          == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        voice = getSystemService(android.telephony.TelephonyManager.class).getVoiceNetworkType();
+    } catch (Exception ignored) {
+    }
+    return CallCapturePlan.carrier(
+        getSystemService(AudioManager.class).getMode(), phoneState, voice);
+  }
 
   public static boolean preparingAuto() {
     return instance != null && instance.autoStarting;
@@ -163,6 +177,7 @@ public class CaptureService extends Service {
       fallbackStage = 0;
       startedNs = System.nanoTime();
       automatic = intent.getBooleanExtra("automatic", false);
+      carrierCapture = intent.getBooleanExtra("carrier", false);
       recordAllRequested = intent.getBooleanExtra("recordAll", false);
       label = intent.getStringExtra("label");
       if (label == null || label.isBlank()) label = automatic ? "Call" : "Recording";
@@ -191,6 +206,8 @@ public class CaptureService extends Service {
       }
       exportSettings.put("mix", ScopeApp.prefs().getBoolean("mix", true));
       exportSettings.put("normalizeMix", ScopeApp.prefs().getBoolean("normalizeMix", true));
+      exportSettings.put(
+          "callKind", carrierCapture ? "carrier" : automatic ? "wifi_or_voip" : "manual");
       exportSettings.put("saveTree", ScopeApp.prefs().getString("saveTree", ""));
       exportSettings.put("saveFolderName", StorageFolders.label());
       sessionName = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS", Locale.US).format(new Date());
@@ -275,6 +292,22 @@ public class CaptureService extends Service {
       };
 
   private void fallback() {
+    if (automatic && carrierCapture && ScopeApp.bridge != null && !paused && fallbackStage == 0) {
+      Track u = tracks.get("uplink"), d = tracks.get("downlink");
+      boolean audible = u != null && u.everAudible || d != null && d.everAudible;
+      boolean dead = (u == null || !u.running) && (d == null || !d.running);
+      if (!audible && (dead || elapsedMs() >= 5000)) {
+        fallbackStage = 2;
+        startTrack("voice_playback");
+        startTrack("communication_input");
+        Notices.event(
+            "Carrier tracks quiet · checking Wi-Fi call routes",
+            "Separate carrier tracks are retained. VoIP playback and Communication mic are added"
+                + " because Wi-Fi telephony may not expose its transport.",
+            "sources");
+      }
+      return;
+    }
     if (!ScopeApp.prefs().getBoolean("fallback", false) || ScopeApp.bridge == null || paused)
       return;
     int seconds = ScopeApp.prefs().getInt("silenceSeconds", 5);
@@ -293,7 +326,7 @@ public class CaptureService extends Service {
       fallbackStage = 2;
       ScopeApp.log("WARN", "Trying communication playback + mic; existing tracks retained");
       startTrack("voice_playback");
-      startTrack("mic");
+      startTrack("communication_input");
     }
   }
 
@@ -301,10 +334,17 @@ public class CaptureService extends Service {
     if (session == null || stopping) return;
     Track previous = tracks.get(id);
     if (previous != null && (previous.running || previous.done.getCount() != 0)) return;
-    Track t = new Track(Source.get(id), session);
-    tracks.put(id, t);
-    allTracks.add(t);
-    ScopeApp.IO.execute(t::run);
+    Source source = Source.get(id);
+    startingSources.add(id);
+    try {
+      ScopeApp.monitor.pauseConflicts(source);
+      Track t = new Track(source, session);
+      tracks.put(id, t);
+      allTracks.add(t);
+      ScopeApp.IO.execute(t::run);
+    } finally {
+      startingSources.remove(id);
+    }
   }
 
   public static long elapsedMs() {
@@ -587,15 +627,15 @@ public class CaptureService extends Service {
                       () -> {
                         autoStarting = false;
                         if (!armed || !inCall() || active() || stopping) return;
+                        boolean carrier = carrierCall();
                         String[] candidates =
-                            ScopeApp.bridge == null
-                                ? new String[] {"any_phone_mic"}
-                                : new String[] {"voice_playback", "any_phone_mic", "voice_call"};
+                            CallCapturePlan.sources(carrier, ScopeApp.bridge != null);
                         Intent capture =
                             new Intent()
                                 .setAction("RECORD")
                                 .putExtra("sources", candidates)
                                 .putExtra("automatic", true)
+                                .putExtra("carrier", carrier)
                                 .putExtra("label", "Call");
                         onStartCommand(capture, 0, 0);
                       });
@@ -661,6 +701,35 @@ public class CaptureService extends Service {
     public volatile boolean running = true, everAudible, publicPlayback;
     public volatile double rms, peak, db = -120, nonzero;
     public volatile long frames, dropped, clipped, silentMs, firstNs, lastNs;
+    public volatile long lastAudibleMs;
+    public volatile boolean previewRequested, systemSilenced;
+    public volatile String captureBackend = "Local AudioRecord", actualPreset = "", routeNote = "";
+    private boolean silencingNotified;
+
+    private static boolean callAudioActive() {
+      int mode = ScopeApp.app.getSystemService(AudioManager.class).getMode();
+      return mode == AudioManager.MODE_IN_CALL
+          || mode == AudioManager.MODE_IN_COMMUNICATION
+          || CallContext.phoneState == android.telephony.TelephonyManager.CALL_STATE_OFFHOOK;
+    }
+
+    private void reportSilenced(boolean value) {
+      if (value != systemSilenced)
+        ScopeApp.log(
+            "WARN", source.id + (value ? " is silenced by Android" : " is no longer silenced"));
+      systemSilenced = value;
+      if (value && !monitor && !silencingNotified) {
+        silencingNotified = true;
+        Notices.error(
+            "Android silenced Communication mic",
+            "A call app owns the microphone. Connect the capture helper and enable its"
+                + " Communication mic recovery in Advanced settings. A foreground service alone"
+                + " cannot guarantee shared call input. Existing audio and playback tracks are"
+                + " retained.",
+            "sources");
+      }
+    }
+
     public volatile int rate, channels;
     public final float[] history = new float[160];
     public volatile int histPos;
@@ -705,9 +774,11 @@ public class CaptureService extends Service {
       int[] presets = source.flexiblePhone() ? new int[] {1, 0, 9, 6, 7} : new int[] {source.input};
       Exception failure = null;
       for (int preset : presets) {
-        if (!running || monitor && (active() || stopping || preparingAuto())) return false;
+        if (!running || monitor && !SourceMonitor.reason(source, previewRequested).isEmpty())
+          return false;
         try {
           if (!source.playback()) builder.setAudioSource(preset);
+          if (source.systemSelectedMic()) builder.setPrivacySensitive(false);
           local = builder.build();
           if (source.phoneMic() || source.bluetooth() || source.external()) {
             pinnedInput = BluetoothRouting.select(source);
@@ -715,10 +786,12 @@ public class CaptureService extends Service {
             if (!preferred && !source.flexiblePhone() && !source.systemSelectedMic())
               throw new IOException("Microphone route rejected by Android");
           }
-          if (!running || monitor && (active() || stopping || preparingAuto())) return false;
+          if (!running || monitor && !SourceMonitor.reason(source, previewRequested).isEmpty())
+            return false;
           if (local.getState() != AudioRecord.STATE_INITIALIZED)
             throw new IOException("AudioRecord initialization failed");
           local.startRecording();
+          actualPreset = preset == 7 ? "VOICE_COMMUNICATION (7)" : "Input preset " + preset;
           if (local.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
             throw new IOException("AudioRecord not recording");
           if (source.flexiblePhone())
@@ -747,12 +820,28 @@ public class CaptureService extends Service {
       }
       try {
         ICaptureBridge bridge = ScopeApp.bridge;
-        if (monitor && (active() || stopping || preparingAuto()))
+        if (monitor && !SourceMonitor.reason(source, previewRequested).isEmpty())
           throw new IllegalStateException(
               "Another recording is in progress; monitoring is paused to protect it");
-        if (bridge != null && !source.phoneMic() && !source.bluetooth() && !source.external()) {
+        boolean helperMic =
+            bridge != null
+                && source.systemSelectedMic()
+                && ScopeApp.prefs().getBoolean("helperCommunicationMic", true);
+        if (helperMic && !CallContext.allowed(android.Manifest.permission.RECORD_AUDIO))
+          throw new SecurityException("Microphone permission was revoked");
+        if (bridge != null
+            && (!source.phoneMic() && !source.bluetooth() && !source.external() || helperMic)) {
           openedBridge = bridge;
-          pipe = bridge.open(source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
+          captureBackend = "Capture helper";
+          pipe =
+              helperMic
+                  ? bridge.openCommunication(
+                      rate,
+                      channels,
+                      callAudioActive(),
+                      ScopeApp.prefs().getBoolean("communicationRecovery", true))
+                  : bridge.open(
+                      source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
           try (DataInputStream in =
               new DataInputStream(
                   new BufferedInputStream(
@@ -768,6 +857,18 @@ public class CaptureService extends Service {
                 throw new IOException("Invalid PCM packet length");
               byte[] b = new byte[n];
               in.readFully(b);
+              if (source.systemSelectedMic()
+                  && android.os.SystemClock.elapsedRealtime() - lastRouteCheck > 750) {
+                lastRouteCheck = android.os.SystemClock.elapsedRealtime();
+                JSONObject status =
+                    new JSONObject(bridge.sourceStatus(source.id, callAudioActive()));
+                device = status.optString("device", "Android has not reported an input device");
+                actualPreset = status.optString("preset", "Communication input");
+                routeNote = status.optString("note", "");
+                reportSilenced(status.optBoolean("silenced"));
+                if (!CallContext.allowed(android.Manifest.permission.RECORD_AUDIO))
+                  throw new SecurityException("Microphone permission was revoked");
+              }
               accept(new Chunk(b, time, frame));
             }
           }
@@ -817,11 +918,11 @@ public class CaptureService extends Service {
           while (running) {
             int n = local.read(bytes, 0, bytes.length);
             if (n == AudioRecord.ERROR_DEAD_OBJECT
-                && source.flexiblePhone()
+                && (source.flexiblePhone() || source.systemSelectedMic())
                 && running
                 && recoveries++ < 3) {
               ScopeApp.log(
-                  "WARN", "Any Phone Mic: reopening lost input; same recording is retained");
+                  "WARN", source.title + ": reopening lost input; same recording is retained");
               local.release();
               local = null;
               if (!openLocal(b)) break;
@@ -839,6 +940,8 @@ public class CaptureService extends Service {
             if (source.phoneMic() || source.bluetooth() || source.external()) {
               // Use this recorder's configuration as corroboration, not a device-global guess.
               AudioRecordingConfiguration config = local.getActiveRecordingConfiguration();
+              if (source.systemSelectedMic() && config != null)
+                reportSilenced(config.isClientSilenced());
               AudioDeviceInfo configured = config == null ? null : config.getAudioDevice();
               if (BluetoothRouting.matches(source, configured, pinnedInput)
                   && (!source.phoneMic()
@@ -877,7 +980,7 @@ public class CaptureService extends Service {
               routeMismatchAt = 0;
             }
             if (route != null) {
-              device = route.getProductName() + " • type " + route.getType();
+              device = BluetoothRouting.inputDescription(route);
               if (lastRouteId != route.getId()) {
                 lastRouteId = route.getId();
                 ScopeApp.log("INFO", source.id + " route: " + device);
@@ -968,6 +1071,8 @@ public class CaptureService extends Service {
       nonzero = stats.nonzero;
       clipped += stats.clipped;
       history[histPos % history.length] = (float) stats.peak;
+      if (stats.db > ScopeApp.prefs().getInt("silenceDb", -60))
+        lastAudibleMs = android.os.SystemClock.elapsedRealtime();
       histPos++;
       state =
           db > ScopeApp.prefs().getInt("silenceDb", -60)
@@ -1022,6 +1127,7 @@ public class CaptureService extends Service {
           double threshold = ScopeApp.prefs().getInt("silenceDb", -60);
           long now = System.nanoTime();
           if (db > threshold) {
+            lastAudibleMs = android.os.SystemClock.elapsedRealtime();
             everAudible = true;
             lastLive = now;
             silentMs = 0;
@@ -1034,6 +1140,8 @@ public class CaptureService extends Service {
                     : "LOW SIGNAL";
           }
           history[histPos % history.length] = (float) stats.peak;
+          if (stats.db > ScopeApp.prefs().getInt("silenceDb", -60))
+            lastAudibleMs = android.os.SystemClock.elapsedRealtime();
           histPos++;
           if (expected >= 0 && c.frame > expected) {
             long gap = (c.frame - expected) * channels * 2;
@@ -1122,6 +1230,10 @@ public class CaptureService extends Service {
       j.put("clipped", clipped);
       j.put("error", error);
       j.put("device", device);
+      j.put("captureBackend", captureBackend);
+      j.put("actualPreset", actualPreset);
+      j.put("systemSilenced", systemSilenced);
+      j.put("routeNote", routeNote);
       j.put("gain", gain);
       j.put("muted", muted);
       return j;

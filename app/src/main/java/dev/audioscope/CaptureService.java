@@ -483,6 +483,8 @@ public class CaptureService extends Service {
       return;
     }
     stopping = true;
+    Notices.clear("recording");
+    Notices.clear("monitoring");
     if (inCall()) callLogic.suppress();
     timer.removeCallbacks(tick);
     getSystemService(NotificationManager.class).notify(42, notification());
@@ -732,7 +734,14 @@ public class CaptureService extends Service {
     public volatile long lastAudibleMs;
     public volatile boolean previewRequested, systemSilenced;
     public volatile String captureBackend = "Local AudioRecord", actualPreset = "", routeNote = "";
-    private boolean silencingNotified;
+    private boolean silencingNotified, recoveryNoticeCleared;
+
+    private void receivedAudio() {
+      if (!recoveryNoticeCleared) {
+        recoveryNoticeCleared = true;
+        Notices.sourceReady(source);
+      }
+    }
 
     private static boolean callAudioActive() {
       int mode = ScopeApp.app.getSystemService(AudioManager.class).getMode();
@@ -745,6 +754,7 @@ public class CaptureService extends Service {
       if (value != systemSilenced)
         ScopeApp.log(
             "WARN", source.id + (value ? " is silenced by Android" : " is no longer silenced"));
+      if (systemSilenced && !value) Notices.clear("source:communication_input");
       systemSilenced = value;
       if (value && !monitor && !silencingNotified) {
         silencingNotified = true;
@@ -1111,6 +1121,7 @@ public class CaptureService extends Service {
     }
 
     private void measure(Chunk c) {
+      receivedAudio();
       PcmStats stats = new PcmStats(c.data, c.data.length);
       rms = stats.rms;
       peak = stats.peak;
@@ -1209,6 +1220,7 @@ public class CaptureService extends Service {
             expected = c.frame + count;
             continue;
           }
+          receivedAudio();
           PcmStats stats = new PcmStats(c.data, c.data.length);
           rms = stats.rms;
           peak = stats.peak;

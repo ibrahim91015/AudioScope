@@ -22,6 +22,7 @@ public class ScopeApp extends Application {
   private boolean interactiveShizuku;
   private final IBinder captureOwner = new Binder();
   private IBinder shizukuBridge;
+  private int transportSelection;
   private android.telephony.TelephonyCallback callObserver;
 
   private static final class CallObserver extends android.telephony.TelephonyCallback
@@ -58,6 +59,11 @@ public class ScopeApp extends Application {
             bridge = null;
             backend = "Reconnecting";
             log("WARN", "Privileged helper disconnected; authorization retained");
+            Notices.error(
+                "Capture helper disconnected",
+                "The helper connection was lost. Saved pairing and recordings are retained.",
+                "settings");
+            MAIN.post(() -> HelperConnectionService.start(app));
           }
         }
       };
@@ -106,6 +112,8 @@ public class ScopeApp extends Application {
       e.apply();
     }
     Notices.channels(this);
+    Notices.clear("recording");
+    Notices.clear("monitoring");
     ensureCallObserver();
     log(
         "INFO",
@@ -168,12 +176,15 @@ public class ScopeApp extends Application {
   }
 
   public static void attach(IBinder b, String label) {
+    String transport = label.contains("Shizuku") ? "shizuku" : "embedded";
+    String selected = prefs().getString("helperTransport", transport);
+    if (!transport.equals(selected)) return; // A late delivery must not undo an explicit selection.
     if (bridge != null && bridge.asBinder().equals(b)) return;
     ICaptureBridge incoming = ICaptureBridge.Stub.asInterface(b);
     try {
-      if (incoming.apiVersion() != 5) throw new IllegalStateException("Old helper version");
+      if (incoming.apiVersion() != 6) throw new IllegalStateException("Old helper version");
     } catch (Exception e) {
-      backend = "Reconnect helper after update";
+      if (bridge == null) backend = "Reconnect helper after update";
       log("WARN", "Old helper detected; restart it in Settings");
       IO.execute(
           () -> {
@@ -203,6 +214,7 @@ public class ScopeApp extends Application {
               bridge = null;
               backend = "Reconnecting";
               log("ERROR", "Shell daemon died; recording pipes will close");
+              MAIN.post(() -> HelperConnectionService.start(app));
               Notices.error(
                   "Capture helper disconnected",
                   "Audio captured so far is retained. AudioScope will try the saved connection"
@@ -217,6 +229,13 @@ public class ScopeApp extends Application {
     }
     if (!label.contains("Shizuku")) EmbeddedAdb.paired();
     MAIN.post(() -> HelperConnectionService.start(app));
+    if (CaptureService.armed && !CaptureService.active())
+      IO.execute(() -> {
+        try {
+          incoming.arm("voice_playback", prefs().getInt("rate", 48000),
+              prefs().getInt("channels", 1), prefs().getInt("uidFilter", -1));
+        } catch (Exception e) { log("WARN", "Reconnected auto-call prearm: " + ShellBridge.root(e)); }
+      });
     log("INFO", "Connected via " + label);
     Notices.event(
         "Capture helper connected",
@@ -226,6 +245,40 @@ public class ScopeApp extends Application {
 
   public void connectShizuku() {
     connectShizuku(true);
+  }
+
+  public void selectTransport(String transport, Runnable ready) {
+    if (CaptureService.active() || CaptureService.stopping) {
+      Notices.error(
+          "Stop recording before switching helpers",
+          "The current helper owns the active tracks. Stop and save them before changing"
+              + " transport.",
+          "settings");
+      return;
+    }
+    if (transport.equals(prefs().getString("helperTransport", ""))) {
+      ready.run();
+      return;
+    }
+    int generation = ++transportSelection;
+    ICaptureBridge previous = bridge;
+    bridge = null;
+    backend = "Switching helper";
+    prefs().edit().putString("helperTransport", transport).apply();
+    requestedShizuku = binding = false;
+    IO.execute(
+        () -> {
+          monitor.stop();
+          if (previous != null)
+            try {
+              previous.shutdown();
+            } catch (Exception ignored) {
+            }
+          MAIN.post(
+              () -> {
+                if (generation == transportSelection) ready.run();
+              });
+        });
   }
 
   public void connectShizuku(boolean interactive) {

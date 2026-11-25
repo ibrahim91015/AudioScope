@@ -115,6 +115,7 @@ public final class DebuggingGuardService extends Service {
                   "settings");
             }
             warned = false;
+            Notices.clear("guard");
           } catch (Exception e) {
             if (!warned) {
               warned = true;

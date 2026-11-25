@@ -92,6 +92,7 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
 
   public static void reconnectBlocking() throws Exception {
     if (ScopeApp.bridge != null && ScopeApp.bridge.asBinder().isBinderAlive()) return;
+    if (reattachExisting()) return;
     LinkedHashSet<Integer> ports = new LinkedHashSet<>();
     if (DebuggingSettings.offlineReady()) ports.add(DebuggingSettings.port());
     try {
@@ -119,6 +120,12 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
     }
     if (last != null) throw last;
     throw new IOException("No local ADB connection port found; pairing identity is unchanged");
+  }
+
+  static boolean reattachExisting() {
+    return HelperRendezvous.request(ScopeApp.app.getApplicationInfo().uid)
+        && ScopeApp.bridge != null
+        && ScopeApp.bridge.asBinder().isBinderAlive();
   }
 
   private static boolean listening(int port) {
@@ -152,6 +159,7 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
   public static synchronized void launchBlocking(int port) throws Exception {
     ICaptureBridge old = ScopeApp.bridge;
     if (old != null && old.asBinder().isBinderAlive()) return;
+    if (reattachExisting()) return;
     ScopeApp.bridge = null;
     EmbeddedAdb adb = get();
     try {
@@ -176,6 +184,9 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
       throw e;
     }
     String path = ScopeApp.app.getApplicationInfo().sourceDir;
+    if (ScopeApp.bridge != null && ScopeApp.bridge.asBinder().isBinderAlive()) return;
+    // The ADB daemon can reach the local socket even on ROMs that deny app-to-shell sockets.
+    if (requestViaAdb(adb)) return;
     if (!path.matches("/[a-zA-Z0-9_./=+~-]+")) throw new SecurityException("Unexpected APK path");
     String command =
         "setsid sh -c 'CLASSPATH="
@@ -194,6 +205,25 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
       throw new IOException("No daemon Binder received; inspect logcat AudioScopeDaemon");
     ScopeApp.log("INFO", "Offline daemon ready; Wi-Fi is no longer needed for recording");
     HelperConnectionService.start(ScopeApp.app);
+  }
+
+  private static boolean requestViaAdb(EmbeddedAdb adb) {
+    Thread caller = Thread.currentThread();
+    ScheduledFuture<?> timeout = TIMER.schedule(caller::interrupt, 4, TimeUnit.SECONDS);
+    try (AdbStream existing =
+        adb.openStream(
+            "localabstract:dev.audioscope.helper.v6." + ScopeApp.app.getApplicationInfo().uid)) {
+      existing.openOutputStream().write(1);
+      return existing.openInputStream().read() == 1
+          && ScopeApp.bridge != null
+          && ScopeApp.bridge.asBinder().isBinderAlive();
+    } catch (Exception absent) {
+      ScopeApp.log("INFO", "No reusable helper rendezvous; starting one daemon");
+      return false;
+    } finally {
+      timeout.cancel(false);
+      Thread.interrupted();
+    }
   }
 
   public static void enableOfflineRestart() {

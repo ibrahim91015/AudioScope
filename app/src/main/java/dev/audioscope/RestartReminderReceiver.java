@@ -18,7 +18,9 @@ public final class RestartReminderReceiver extends BroadcastReceiver {
     if (!ScopeApp.prefs().contains("helperTransport")
         && !ScopeApp.prefs().getBoolean("autoCalls", false)) return;
     Notices.error(
-        "AudioScope setup needs reconnecting",
+        ScopeApp.prefs().getBoolean("autoCalls", false)
+            ? "Open AudioScope to resume automatic calls"
+            : "AudioScope setup needs reconnecting",
         "AudioScope is retrying your saved helper connection. If needed, join Wi-Fi and enable"
             + " Wireless debugging; reboot does not normally require another pairing code."
             + " Open AudioScope to re-arm automatic call recording. Android blocks microphone"

@@ -161,6 +161,7 @@ public final class PlaybackService extends Service {
     try {
       player.setPlaybackParams(new PlaybackParams().setSpeed(speed));
       player.start();
+      Notices.clear("playback");
       playing = true;
       updateNotification();
     } catch (Exception e) {

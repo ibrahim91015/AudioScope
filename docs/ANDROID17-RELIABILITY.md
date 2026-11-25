@@ -1,7 +1,9 @@
 # Android 17 connection and screen-off recording investigation
 
-Prepared November 25, 2026. Implementation candidate: AudioScope 0.5.3-rc1, helper API 5.
-Phone acceptance is pending. No physical phone was accessed during this work.
+Prepared November 25, 2026. The initial AudioScope 0.5.3-rc1/helper API 5 work
+was locally validated. Follow-up phone testing produced
+[0.5.3-rc2/helper API 6](RELEASE-0.5.3-rc2.md); see its
+[completed checks and remaining acceptance](VALIDATION-0.5.3-rc2.md).
 
 ## What the upstream projects changed
 

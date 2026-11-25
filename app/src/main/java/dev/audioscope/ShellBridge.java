@@ -90,7 +90,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
 
   public int apiVersion() {
     check();
-    return 5;
+    return 6;
   }
 
   private final int allowedUid;
@@ -394,7 +394,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
       j.put("armed", new JSONArray(policies.keySet()));
       j.put("processProtection", processProtection);
       j.put("cgroups", HelperProcess.groups());
-      j.put("api", 5);
+      j.put("api", 6);
       JSONObject running = new JSONObject();
       for (Map.Entry<String, Pump> e : pumps.entrySet())
         running.put(e.getKey(), e.getValue().describe());
@@ -690,7 +690,25 @@ public class ShellBridge extends ICaptureBridge.Stub {
     try {
       if (args.length != 1) throw new IllegalArgumentException("Expected application UID");
       Looper.prepareMainLooper();
-      ShellBridge bridge = new ShellBridge(Integer.parseInt(args[0]));
+      int appUid = Integer.parseInt(args[0]);
+      android.net.LocalServerSocket rendezvous;
+      try {
+        rendezvous = HelperRendezvous.claim(appUid);
+      } catch (IOException occupied) {
+        if (HelperRendezvous.request(appUid)) return;
+        throw new IOException("Helper rendezvous is reserved by another process", occupied);
+      }
+      ShellBridge bridge = new ShellBridge(appUid);
+      HelperRendezvous.serve(
+          rendezvous,
+          appUid,
+          () -> {
+            try {
+              deliver(bridge);
+            } catch (Exception e) {
+              throw new IllegalStateException(e);
+            }
+          });
       deliver(bridge);
       new Handler()
           .postDelayed(

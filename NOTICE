@@ -58,3 +58,8 @@ and cgroup starter at ea7b84dc31dc2a7cf6c93aa62a6e9cd7eb673d4b, and
 ShizuCallRecorder's Binder work-source clearing and Android 17 permission
 compatibility at ea62e3abe665a08ac5399ffef4ac8dc392f0a7b4. The new Java
 implementations are independently written; existing license terms remain.
+
+Version 0.5.3-rc2 adds an independently implemented credential-checked local
+helper rendezvous, explicit transport selection, notification lifecycle topics
+and automatic dismissal of resolved states. Phone checks and their limits are
+documented separately; no private phone logs or recordings are distributed.

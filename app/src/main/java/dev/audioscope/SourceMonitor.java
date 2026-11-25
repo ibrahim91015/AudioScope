@@ -99,6 +99,7 @@ public final class SourceMonitor {
   }
 
   public void disable() {
+    Notices.clear("monitoring");
     enabled = false;
     bluetoothManual.clear();
     ScopeApp.IO.execute(this::closeAll);

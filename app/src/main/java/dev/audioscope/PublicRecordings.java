@@ -125,6 +125,7 @@ public final class PublicRecordings {
       if (!tree.isEmpty()) {
         try (InputStream in = new FileInputStream(chosen)) {
           Uri custom = StorageFolders.copy(tree, name, mime, in);
+          Notices.clear("message:Save folder unavailable");
           t.put("publicUri", custom.toString());
           t.put("publicDestination", manifest.optString("saveFolderName", "Selected folder"));
           persist(folder, manifest);

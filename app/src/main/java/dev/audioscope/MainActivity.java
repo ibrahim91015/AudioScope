@@ -125,6 +125,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
   public void onResume() {
     super.onResume();
     foreground = true;
+    Notices.reconcile();
     ScopeApp.app.ensureCallObserver();
     HelperConnectionService.start(this);
     if (DebuggingSettings.embedded()
@@ -1835,7 +1836,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
               () -> {
                 if (settingsEditable()) {
                   monitors.disable();
-                  ScopeApp.app.connectShizuku();
+                  ScopeApp.app.selectTransport("shizuku", () -> ScopeApp.app.connectShizuku());
                 }
               }));
       helper.addView(
@@ -2725,6 +2726,10 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
       return;
     }
     if (action.equals("PAIR") || action.equals("CONNECT")) {
+      if (!DebuggingSettings.embedded()) {
+        ScopeApp.app.selectTransport("embedded", () -> setup(action));
+        return;
+      }
       startForegroundService(
           new Intent(this, PairingService.class)
               .setAction(action.equals("PAIR") ? "START" : "CONNECT"));

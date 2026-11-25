@@ -372,7 +372,7 @@ public class MicRegressionTest extends InstrumentationTestCase {
   public void testHelperCommunicationContinuesAfterHomeAndReportsActualInput() throws Exception {
     activity = foreground("record");
     waitFor(() -> ScopeApp.bridge != null, 12000);
-    assertEquals(5, ScopeApp.bridge.apiVersion());
+    assertEquals(6, ScopeApp.bridge.apiVersion());
     ScopeApp.app.startForegroundService(
         new Intent(ScopeApp.app, CaptureService.class)
             .setAction("RECORD")

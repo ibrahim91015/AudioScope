@@ -49,16 +49,34 @@ locally without transcribing or publishing call audio.
 This confirms continuity and non-silent samples in this call. It does not replace
 the user's listening check for intelligibility or prove every calling app.
 
+## Call finalization and reboot
+
+The test call finalized with both tracks stopped, no track errors and two
+published copies. A user-approved reboot then destroyed the previous helper and
+TCP listener. After unlock, the boot-started reconnect service discovered the
+Wireless debugging port and authenticated automatically with the same public
+identity. No pairing code or manual Connect action was used.
+
+Samsung subsequently restarted adbd while the USB default was MTP, killing its
+helper too. The phone's USB default was changed to Charging only while USB
+debugging remained enabled. Both persistent and active USB configuration read
+`sec_charging,adb`. A subsequent screen-off/wake cycle retained the same adbd and
+helper processes. AudioScope was left connected with automatic calls armed.
+
+Opening the app after reboot re-arms its microphone foreground service. The
+boot reconnect service itself does not open microphone sources.
+
 ## Remaining acceptance
 
-Call finalization/listening, an actual reboot and Shevery capture are pending.
-The direct helper test alone is evidence of file continuity under a blocked
-reader and screen lock, not proof of both voices on a real call.
+User listening/intelligibility, other calling apps and Shevery capture have not
+been independently retested. The helper and pairing checks used Embedded ADB.
+Wi-Fi-loss and USB-unplug scenarios were not tested in this session.
 
 The helper could not leave adbd's cgroup on this Samsung build. A stopped adbd
-can still kill the helper. The configured USB default is MTP; authorization
-expiry is disabled and Wireless debugging is readable/enabled. No unsupported
-claim is made that the app can override Force stop or OEM security policy.
+can still kill the helper. Authorization expiry is disabled and Wireless
+debugging is readable/enabled. No claim is made that the app can override Force
+stop or OEM security policy. File transfer can still be selected manually from
+the phone's USB notification.
 
 Raw phone logs, audio, pairing keys and unique phone identifiers are excluded
 from Git and public artifacts.

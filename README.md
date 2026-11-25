@@ -2,7 +2,7 @@
 
 An offline Android recording app with a dark purple Material 3 interface, selectable accents, live source meters, and separate audio tracks. Android 13+. Package `dev.audioscope`. Version **0.5.2**.
 
-**Android 17 candidate: 0.5.3-rc2.** Adds persistent helper reconnection, atomic identity migration, helper-side file writing for screen-off capture, and automatic cleanup of resolved notifications. Screen-off helper capture and pairing retention have passed initial phone checks; real-call/reboot acceptance is pending. See the [investigation and upstream changes](docs/ANDROID17-RELIABILITY.md) and [candidate notes and phone findings](docs/RELEASE-0.5.3-rc2.md). The sections below describe the last stable release.
+**Android 17 candidate: 0.5.3-rc2.** Adds persistent helper reconnection, atomic identity migration, helper-side file writing for screen-off capture, and automatic cleanup of resolved notifications. Phone checks passed for screen-off call capture, notification cleanup, helper reuse and reconnection after reboot without a pairing code. See the [validation and remaining limits](docs/VALIDATION-0.5.3-rc2.md) and [candidate notes](docs/RELEASE-0.5.3-rc2.md). The sections below describe the last stable release.
 
 ![Recording detail](docs/session-detail.png)
 

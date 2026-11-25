@@ -44,7 +44,10 @@ waveform pipe, including screen-off capture.
 Samsung rejected cgroup migration: the helper remains in adbd's group. USB
 debugging is enabled, the existing TCP listener is port 5555, and the configured
 USB default is MTP. A debugging-service stop can therefore still affect the
-helper. A real call, reboot and Shevery capture acceptance remain separate checks.
+helper. Follow-up checks passed for real-call screen-off continuity and automatic
+reconnection after reboot without a pairing code. The phone's USB default was
+then changed to Charging only after another adbd restart; a subsequent lock/wake
+cycle kept both processes alive. Shevery-specific capture remains untested.
 
 The OS event-notification category was blocked independently of the app-wide
 permission. With the user's approval, that category and recording controls were

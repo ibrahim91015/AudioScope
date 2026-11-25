@@ -1,5 +1,6 @@
 package dev.audioscope;
 import android.os.ParcelFileDescriptor;
+import android.os.IBinder;
 interface ICaptureBridge {
     String arm(String source, int rate, int channels, int uidFilter);
     ParcelFileDescriptor open(String source, int rate, int channels, int uidFilter);
@@ -12,4 +13,8 @@ interface ICaptureBridge {
     String systemSetup(String action, String value);
     ParcelFileDescriptor openCommunication(int rate, int channels, boolean callActive, boolean recover);
     String sourceStatus(String source, boolean callActive);
+    ParcelFileDescriptor openSaved(String source, int rate, int channels, int uidFilter, boolean communication, boolean callActive, boolean recover, in ParcelFileDescriptor output);
+    String finishSaved(String source);
+    void pauseSaved(boolean paused);
+    void registerClient(IBinder owner);
 }

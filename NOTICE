@@ -49,3 +49,12 @@ with call-safe MIC recovery, actual-input status, separate carrier normalization
 configurable safe previews, temporary recent-activity ordering, app clock styles
 and full session metadata. Recovery design was informed by CallVault's
 VoipCaptureSession at the upstream commit above; attribution remains intact.
+
+Version 0.5.3-rc1 adds independent helper-side WAV writing, atomic identity
+migration, bounded reconnection and opt-in debugging repair. These Java changes
+were informed by CallVault's Android 17 prereleases and PairingLoss/recovery
+policies at 1561721d21321cf84a251093075b59b351b2e8c0, Shevery's serial discovery
+and cgroup starter at ea7b84dc31dc2a7cf6c93aa62a6e9cd7eb673d4b, and
+ShizuCallRecorder's Binder work-source clearing and Android 17 permission
+compatibility at ea62e3abe665a08ac5399ffef4ac8dc392f0a7b4. The new Java
+implementations are independently written; existing license terms remain.

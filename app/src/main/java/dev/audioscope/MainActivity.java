@@ -126,6 +126,19 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
     super.onResume();
     foreground = true;
     ScopeApp.app.ensureCallObserver();
+    HelperConnectionService.start(this);
+    if (DebuggingSettings.embedded()
+        && ScopeApp.prefs().getBoolean("enforceWireless", false)
+        && !DebuggingGuardService.running)
+      startForegroundService(new Intent(this, DebuggingGuardService.class));
+    if (ScopeApp.prefs().getBoolean("autoCalls", false)
+        && !CaptureService.armed
+        && !CaptureService.active()
+        && !CaptureService.stopping
+        && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+      startForegroundService(new Intent(this, CaptureService.class).setAction("ARM_AUTO"));
+    }
     if (tab == 4) {
       render();
       refreshDebugging();
@@ -1198,7 +1211,7 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
                     + "\n"
                     + (ScopeApp.bridge == null ? "Shell disconnected" : ScopeApp.bridge.inspect())
                     + "\n\nEVENTS\n"
-                    + ScopeApp.logText("");
+                    + ScopeApp.diagnosticHistory();
             try (FileWriter w = new FileWriter(f)) {
               w.write(report);
             }
@@ -1800,10 +1813,12 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
       adb.addView(button("Connect paired phone", CARD, () -> setup("CONNECT")));
       adb.addView(
           text(
-              "Once connected, capture continues offline without Wi-Fi. Android changes the"
-                  + " connection port; Connect paired phone discovers it again.",
+              "Pairing and connection are different. The private pairing key is saved across"
+                  + " app restarts and reboots; connection ports can change. AudioScope retries"
+                  + " those ports automatically. Re-pair only after Android rejects the key.",
               13,
               MUTED));
+      adb.addView(text("Connection: " + HelperConnectionService.status, 14, MUTED));
       body.addView(adb);
       LinearLayout helper = card();
       helper.addView(text("Shevery / Shizuku", 18, INK));
@@ -2257,6 +2272,25 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             14,
             MUTED));
     body.addView(offline);
+    LinearLayout connection = card();
+    toggle(
+        connection,
+        "Reconnect helper automatically",
+        "Retries your saved Embedded ADB pairing or authorized Shevery service after app,"
+            + " network and phone restarts. A persistent notification has a stop control."
+            + " This restores the helper; it does not open microphones or bypass Force stop.",
+        "helperReconnect",
+        true);
+    connection.addView(text(HelperConnectionService.status, 14, MUTED));
+    connection.addView(
+        button(
+            "Resume / retry helper connection",
+            CARD,
+            () -> {
+              ScopeApp.prefs().edit().putBoolean("helperReconnect", true).apply();
+              HelperConnectionService.start(this);
+            }));
+    body.addView(connection);
     section("ANDROID DEBUGGING");
     LinearLayout usb = card();
     usb.addView(text("USB debugging · " + DebuggingSettings.state("usb"), 17, INK));
@@ -2298,6 +2332,69 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             () -> startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))));
     usb.addView(button("Refresh actual debugging status", CARD, this::refreshDebugging));
     body.addView(usb);
+    LinearLayout trust = card();
+    String timeout = DebuggingSettings.snapshot.optString("authorizationTimeout", "unknown");
+    trust.addView(text("Remember debugging authorizations", 17, INK));
+    trust.addView(
+        text(
+            "Android authorization expiry: "
+                + (timeout.equals("0")
+                    ? "disabled"
+                    : timeout.matches("[0-9]+")
+                        ? timeout + " ms"
+                        : "system default / not verified"),
+            14,
+            MUTED));
+    trust.addView(
+        text(
+            "Android can expire debugging keys even when the app keeps its identity."
+                + " This is separate from a changing connection port or a disconnected helper.",
+            14,
+            MUTED));
+    trust.addView(
+        button(
+            "Prevent authorization expiry…",
+            CARD,
+            () -> {
+              if (!settingsEditable()) return;
+              new AlertDialog.Builder(this)
+                  .setTitle("Keep all ADB authorizations?")
+                  .setMessage(
+                      "This enables Android's ‘Disable adb authorization timeout’ setting. It"
+                          + " applies to every computer and app already authorized to debug this"
+                          + " phone, not only AudioScope. Those keys remain trusted until you"
+                          + " revoke them. Review Paired devices and revoke unknown computers"
+                          + " first.\n\n"
+                          + "Your existing pairing key is kept. This does not leave a TCP port"
+                          + " open, enable USB debugging, or prevent Android from stopping a"
+                          + " service.")
+                  .setPositiveButton(
+                      "Prevent expiry",
+                      (d, w) -> {
+                        if (!ScopeApp.prefs().contains("previousAdbTimeout")) {
+                          String previous =
+                              DebuggingSettings.snapshot.optString("authorizationTimeout", "");
+                          ScopeApp.prefs()
+                              .edit()
+                              .putString(
+                                  "previousAdbTimeout",
+                                  previous.matches("[0-9]{1,11}") ? previous : "604800000")
+                              .apply();
+                        }
+                        applyDebugging("AUTH_TIMEOUT", "0");
+                      })
+                  .setNegativeButton("Cancel", null)
+                  .show();
+            }));
+    trust.addView(
+        button(
+            "Restore previous authorization timeout",
+            CARD,
+            () ->
+                applyDebugging(
+                    "AUTH_TIMEOUT",
+                    ScopeApp.prefs().getString("previousAdbTimeout", "604800000"))));
+    body.addView(trust);
     LinearLayout restart = card();
     boolean opted = ScopeApp.prefs().getBoolean("offlineRestart", false);
     String status =
@@ -2402,18 +2499,21 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
               new AlertDialog.Builder(this)
                   .setTitle("Keep Wireless debugging enabled?")
                   .setMessage(
-                      "While this guard runs and an Embedded ADB helper is reachable, AudioScope"
-                          + " can turn Wireless debugging back on if it was switched off. This is"
-                          + " opt-in and uses a persistent notification. Android may still disable"
-                          + " it off Wi-Fi. It cannot revive a dead helper or bypass reboot pairing"
-                          + " requirements.")
-                  .setPositiveButton(
-                      "Enable guard",
-                      (d, w) -> {
-                        ScopeApp.prefs().edit().putBoolean("enforceWireless", true).apply();
-                        startForegroundService(new Intent(this, DebuggingGuardService.class));
-                        render();
-                      })
+                      "This guard may turn Wireless debugging back on while connected to Wi-Fi,"
+                          + " including after Android switches it off. Disable the guard when you"
+                          + " want debugging to stay off. A persistent notification includes a stop"
+                          + " button.\n\n"
+                          + "The connected helper grants AudioScope Android's powerful"
+                          + " WRITE_SECURE_SETTINGS permission so it can request a debugging"
+                          + " restart even after the helper dies. The permission remains until"
+                          + " revoked. A restart is attempted only when adbd is confirmed stopped,"
+                          + " no helper or Shevery manager answers, and no call or recording is"
+                          + " active. Attempts are at least 10 minutes apart. Unknown states are"
+                          + " left alone.\n\n"
+                          + "This does not pair automatically or change authorization expiry. Your"
+                          + " saved pairing identity is reused; no network port is opened beyond"
+                          + " Android's Wireless debugging.")
+                  .setPositiveButton("Enable guard", (d, w) -> enableDebuggingGuard())
                   .setNegativeButton("Cancel", null)
                   .show();
             }));
@@ -2520,7 +2620,45 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             + " After reboot, reconnect the helper and re-arm automatic calls from the app.",
         "restartReminder",
         true);
+    battery.addView(
+        text(
+            "Screen-off protected audio is saved directly by the helper. The live waveform pipe can"
+                + " pause without stopping its file writer. Android Force stop still ends app-owned"
+                + " recording; launch AudioScope again afterward. Ordinary phone/Bluetooth inputs"
+                + " still use the app's microphone foreground service.",
+            14,
+            MUTED));
     body.addView(battery);
+  }
+
+  private void enableDebuggingGuard() {
+    monitors.disable();
+    ScopeApp.IO.execute(
+        () -> {
+          try {
+            monitors.stop();
+            if (checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
+                != PackageManager.PERMISSION_GRANTED) {
+              ICaptureBridge b = ScopeApp.bridge;
+              if (b == null)
+                throw new IOException(
+                    "Connect the Embedded ADB helper once to grant recovery access");
+              b.systemSetup("RECOVERY_ACCESS", "1");
+              if (checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
+                  != PackageManager.PERMISSION_GRANTED)
+                throw new IOException("Android did not grant recovery access");
+            }
+            ScopeApp.prefs().edit().putBoolean("enforceWireless", true).apply();
+            handler.post(
+                () -> {
+                  if (destroyed || !foreground) return;
+                  startForegroundService(new Intent(this, DebuggingGuardService.class));
+                  render();
+                });
+          } catch (Exception e) {
+            Notices.error("Debugging repair needs setup", ShellBridge.root(e), "settings");
+          }
+        });
   }
 
   private void applyDebugging(String action, String value) {
@@ -2540,7 +2678,11 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
           try {
             DebuggingSettings.snapshot = new JSONObject(ScopeApp.bridge.systemSetup(action, value));
             String key =
-                action.equals("USB") ? "usb" : action.equals("WIRELESS") ? "wireless" : "usbMode";
+                action.equals("USB")
+                    ? "usb"
+                    : action.equals("WIRELESS")
+                        ? "wireless"
+                        : action.equals("AUTH_TIMEOUT") ? "authorizationTimeout" : "usbMode";
             boolean verified = value.equals(DebuggingSettings.snapshot.optString(key));
             Notices.event(
                 verified ? "Android setting verified" : "Android setting needs verification",
@@ -2678,7 +2820,13 @@ public class MainActivity extends androidx.appcompat.app.AppCompatActivity {
             new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
             new int[] {ACCENT, MUTED}));
     control.setOnCheckedChangeListener(
-        (v, checked) -> ScopeApp.prefs().edit().putBoolean(key, checked).apply());
+        (v, checked) -> {
+          ScopeApp.prefs().edit().putBoolean(key, checked).apply();
+          if (key.equals("helperReconnect")) {
+            if (checked) HelperConnectionService.start(this);
+            else stopService(new Intent(this, HelperConnectionService.class));
+          }
+        });
     row.addView(control, new LinearLayout.LayoutParams(dp(56), -2));
     name.setOnClickListener(
         v -> {

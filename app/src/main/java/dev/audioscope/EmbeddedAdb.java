@@ -6,15 +6,10 @@ import android.content.Context;
 import android.os.Build;
 import io.github.muntashirakon.adb.*;
 import java.io.*;
-import java.math.BigInteger;
 import java.security.*;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateFactory;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.*;
 import java.util.concurrent.*;
-import org.bouncycastle.asn1.x509.X509Name;
-import org.bouncycastle.x509.X509V3CertificateGenerator;
 
 public final class EmbeddedAdb extends AbsAdbConnectionManager {
   private final PrivateKey key;
@@ -23,35 +18,18 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
   private static final ScheduledExecutorService TIMER =
       Executors.newSingleThreadScheduledExecutor();
 
-  @SuppressWarnings("deprecation")
   private EmbeddedAdb(Context c) throws Exception {
     setApi(Build.VERSION.SDK_INT);
-    setTimeout(12, TimeUnit.SECONDS);
-    File k = new File(c.getFilesDir(), "adb-private.der"),
-        crt = new File(c.getFilesDir(), "adb-cert.der");
-    if (k.exists() && crt.exists()) {
-      key = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(read(k)));
-      try (InputStream in = new FileInputStream(crt)) {
-        cert = CertificateFactory.getInstance("X.509").generateCertificate(in);
-      }
-    } else {
-      KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-      gen.initialize(2048);
-      KeyPair pair = gen.generateKeyPair();
-      key = pair.getPrivate();
-      X509V3CertificateGenerator cg = new X509V3CertificateGenerator();
-      cg.setSerialNumber(new BigInteger(120, new SecureRandom()));
-      X509Name name = new X509Name("CN=AudioScope");
-      cg.setIssuerDN(name);
-      cg.setSubjectDN(name);
-      cg.setNotBefore(new Date(System.currentTimeMillis() - 86400000));
-      cg.setNotAfter(new Date(System.currentTimeMillis() + 10L * 365 * 86400000));
-      cg.setPublicKey(pair.getPublic());
-      cg.setSignatureAlgorithm("SHA256withRSA");
-      cert = cg.generate(key);
-      write(k, key.getEncoded());
-      write(crt, cert.getEncoded());
-    }
+    setTimeout(8, TimeUnit.SECONDS);
+    AdbIdentityStore identity = new AdbIdentityStore(c.getNoBackupFilesDir(), c.getFilesDir());
+    key = identity.key;
+    cert = identity.cert;
+    byte[] fingerprint =
+        MessageDigest.getInstance("SHA-256").digest(cert.getPublicKey().getEncoded());
+    StringBuilder shortId = new StringBuilder();
+    for (int i = 0; i < 8; i++)
+      shortId.append(String.format(Locale.US, "%02x", fingerprint[i] & 255));
+    ScopeApp.log("INFO", "Saved ADB public identity: " + shortId);
   }
 
   public PrivateKey getPrivateKey() {
@@ -69,19 +47,6 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
   public static synchronized EmbeddedAdb get() throws Exception {
     if (instance == null) instance = new EmbeddedAdb(ScopeApp.app);
     return instance;
-  }
-
-  private static byte[] read(File f) throws IOException {
-    try (InputStream in = new FileInputStream(f)) {
-      return in.readAllBytes();
-    }
-  }
-
-  private static void write(File f, byte[] b) throws IOException {
-    try (FileOutputStream out = new FileOutputStream(f)) {
-      out.write(b);
-      out.getFD().sync();
-    }
   }
 
   /** libadb stream-open otherwise has no timeout. Interrupt only the opening thread. */
@@ -104,6 +69,7 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
               throw new IllegalArgumentException(
                   "Use the pairing port and six-digit code shown by Android");
             boolean ok = get().pair("127.0.0.1", port, code);
+            if (ok) paired();
             ScopeApp.log(
                 ok ? "INFO" : "ERROR",
                 ok
@@ -113,6 +79,56 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
             ScopeApp.log("ERROR", "ADB pairing: " + ShellBridge.root(e));
           }
         });
+  }
+
+  static void paired() {
+    ScopeApp.prefs()
+        .edit()
+        .putBoolean("adbPaired", true)
+        .putInt("adbRefusals", 0)
+        .putString("helperTransport", "embedded")
+        .commit();
+  }
+
+  public static void reconnectBlocking() throws Exception {
+    if (ScopeApp.bridge != null && ScopeApp.bridge.asBinder().isBinderAlive()) return;
+    LinkedHashSet<Integer> ports = new LinkedHashSet<>();
+    if (DebuggingSettings.offlineReady()) ports.add(DebuggingSettings.port());
+    try {
+      ports.add(Integer.parseInt(ScopeApp.prefs().getString("adbPort", "0")));
+    } catch (NumberFormatException ignored) {
+    }
+    Exception last = null;
+    for (int port : ports) {
+      if (!listening(port)) continue;
+      try {
+        launchBlocking(port);
+        return;
+      } catch (Exception e) {
+        last = e;
+      }
+    }
+    int found = AdbDiscovery.findConnection(ScopeApp.app, 12000);
+    if (found > 0 && !ports.contains(found)) {
+      try {
+        launchBlocking(found);
+        return;
+      } catch (Exception e) {
+        last = e;
+      }
+    }
+    if (last != null) throw last;
+    throw new IOException("No local ADB connection port found; pairing identity is unchanged");
+  }
+
+  private static boolean listening(int port) {
+    if (port < 1 || port > 65535) return false;
+    try (java.net.Socket socket = new java.net.Socket()) {
+      socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 300);
+      return true;
+    } catch (IOException e) {
+      return false;
+    }
   }
 
   public static void launch(int port) {
@@ -125,8 +141,8 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
             ScopeApp.log("ERROR", "ADB launch: " + error);
             Notices.error(
                 "ADB connection failed",
-                "Use Connect paired phone to discover the current connection port, or pair"
-                    + " again.\n\n"
+                "The saved pairing was kept. Connect paired phone retries the current port. "
+                    + "Re-pair only if Android actually rejected the key.\n\n"
                     + error,
                 "settings");
           }
@@ -134,22 +150,31 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
   }
 
   public static synchronized void launchBlocking(int port) throws Exception {
-    if (CaptureService.active())
-      throw new IllegalStateException("Stop recording before restarting the helper");
     ICaptureBridge old = ScopeApp.bridge;
+    if (old != null && old.asBinder().isBinderAlive()) return;
     ScopeApp.bridge = null;
-    if (old != null)
-      try {
-        old.shutdown();
-      } catch (Exception ignored) {
-      }
     EmbeddedAdb adb = get();
     try {
       adb.disconnect();
     } catch (Exception ignored) {
     }
-    if (!adb.connect("127.0.0.1", port))
-      throw new IOException("ADB connection refused; check port and pairing");
+    try {
+      if (!adb.connect("127.0.0.1", port))
+        throw new IOException("ADB transport refused the connection; saved identity was kept");
+      ScopeApp.prefs()
+          .edit()
+          .putBoolean("adbPaired", true)
+          .putInt("adbRefusals", 0)
+          .putString("adbPort", String.valueOf(port))
+          .commit();
+    } catch (Exception e) {
+      if (ReconnectPolicy.authenticationRejected(e)) {
+        int refusals = ReconnectPolicy.refusals(ScopeApp.prefs().getInt("adbRefusals", 0), true);
+        ScopeApp.prefs().edit().putInt("adbRefusals", refusals).apply();
+        ScopeApp.log("WARN", "ADB authentication rejected (" + refusals + "/3); identity retained");
+      }
+      throw e;
+    }
     String path = ScopeApp.app.getApplicationInfo().sourceDir;
     if (!path.matches("/[a-zA-Z0-9_./=+~-]+")) throw new SecurityException("Unexpected APK path");
     String command =
@@ -168,6 +193,7 @@ public final class EmbeddedAdb extends AbsAdbConnectionManager {
     if (ScopeApp.bridge == null)
       throw new IOException("No daemon Binder received; inspect logcat AudioScopeDaemon");
     ScopeApp.log("INFO", "Offline daemon ready; Wi-Fi is no longer needed for recording");
+    HelperConnectionService.start(ScopeApp.app);
   }
 
   public static void enableOfflineRestart() {

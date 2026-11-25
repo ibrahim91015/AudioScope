@@ -19,6 +19,9 @@ public class ScopeApp extends Application {
   public static final Handler MAIN = new Handler(Looper.getMainLooper());
   public static final SourceMonitor monitor = new SourceMonitor();
   private boolean requestedShizuku, binding;
+  private boolean interactiveShizuku;
+  private final IBinder captureOwner = new Binder();
+  private IBinder shizukuBridge;
   private android.telephony.TelephonyCallback callObserver;
 
   private static final class CallObserver extends android.telephony.TelephonyCallback
@@ -46,19 +49,27 @@ public class ScopeApp extends Application {
         public void onServiceConnected(ComponentName n, IBinder b) {
           binding = false;
           requestedShizuku = false;
+          shizukuBridge = b;
           attach(b, "Shizuku / Shevery");
         }
 
         public void onServiceDisconnected(ComponentName n) {
-          bridge = null;
-          backend = "Disconnected";
-          log("WARN", "Privileged helper disconnected");
+          if (bridge != null && bridge.asBinder().equals(shizukuBridge)) {
+            bridge = null;
+            backend = "Reconnecting";
+            log("WARN", "Privileged helper disconnected; authorization retained");
+          }
         }
       };
 
   public void onCreate() {
     super.onCreate();
     app = this;
+    if (!prefs().contains("adbPaired")
+        && "embedded".equals(prefs().getString("helperTransport", ""))
+        && new File(getFilesDir(), "adb-private.der").isFile()) {
+      prefs().edit().putBoolean("adbPaired", true).apply();
+    }
     if (!prefs().getBoolean("carrierSplit052", false)) {
       Set<String> previousDefaults = new HashSet<>();
       Set<String> oldCommon =
@@ -152,7 +163,7 @@ public class ScopeApp extends Application {
         });
     Shizuku.addBinderReceivedListenerSticky(
         () -> {
-          if (requestedShizuku) connectShizuku();
+          if (requestedShizuku) connectShizuku(interactiveShizuku);
         });
   }
 
@@ -160,7 +171,7 @@ public class ScopeApp extends Application {
     if (bridge != null && bridge.asBinder().equals(b)) return;
     ICaptureBridge incoming = ICaptureBridge.Stub.asInterface(b);
     try {
-      if (incoming.apiVersion() != 4) throw new IllegalStateException("Old helper version");
+      if (incoming.apiVersion() != 5) throw new IllegalStateException("Old helper version");
     } catch (Exception e) {
       backend = "Reconnect helper after update";
       log("WARN", "Old helper detected; restart it in Settings");
@@ -171,6 +182,12 @@ public class ScopeApp extends Application {
             } catch (Exception ignored) {
             }
           });
+      return;
+    }
+    try {
+      incoming.registerClient(app.captureOwner);
+    } catch (Exception e) {
+      log("ERROR", "Helper ownership registration failed: " + ShellBridge.root(e));
       return;
     }
     bridge = incoming;
@@ -184,12 +201,13 @@ public class ScopeApp extends Application {
           () -> {
             if (bridge != null && bridge.asBinder().equals(b)) {
               bridge = null;
-              backend = "Disconnected";
+              backend = "Reconnecting";
               log("ERROR", "Shell daemon died; recording pipes will close");
               Notices.error(
                   "Capture helper disconnected",
-                  "Reconnect in Settings. Completed audio is retained; protected sources cannot"
-                      + " continue without the helper.",
+                  "Audio captured so far is retained. AudioScope will try the saved connection"
+                      + " again automatically. A disconnected helper does not mean pairing was"
+                      + " lost.",
                   "settings");
             }
           },
@@ -197,6 +215,8 @@ public class ScopeApp extends Application {
     } catch (Exception e) {
       log("ERROR", e.toString());
     }
+    if (!label.contains("Shizuku")) EmbeddedAdb.paired();
+    MAIN.post(() -> HelperConnectionService.start(app));
     log("INFO", "Connected via " + label);
     Notices.event(
         "Capture helper connected",
@@ -205,6 +225,12 @@ public class ScopeApp extends Application {
   }
 
   public void connectShizuku() {
+    connectShizuku(true);
+  }
+
+  public void connectShizuku(boolean interactive) {
+    if (bridge != null && bridge.asBinder().isBinderAlive()) return;
+    interactiveShizuku = interactive;
     requestedShizuku = true;
     try {
       if (!Shizuku.pingBinder()) {
@@ -213,20 +239,22 @@ public class ScopeApp extends Application {
             () -> {
               if (requestedShizuku && !Shizuku.pingBinder()) {
                 requestedShizuku = false;
-                Notices.error(
-                    "Shevery / Shizuku service is not running",
-                    "Open the installed manager and start its service using wireless debugging."
-                        + " Return to AudioScope, tap Connect, and authorize AudioScope. Embedded"
-                        + " ADB is an independent option.",
-                    "settings");
+                if (interactiveShizuku)
+                  Notices.error(
+                      "Shevery / Shizuku service is not running",
+                      "Open the installed manager and start its service using wireless debugging."
+                          + " Return to AudioScope, tap Connect, and authorize AudioScope. Embedded"
+                          + " ADB is an independent option.",
+                      "settings");
               }
             },
             8000);
         return;
       }
-      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED)
-        Shizuku.requestPermission(12);
-      else bindShizuku();
+      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+        if (interactiveShizuku) Shizuku.requestPermission(12);
+        else requestedShizuku = false;
+      } else bindShizuku();
     } catch (Throwable e) {
       binding = false;
       log("ERROR", "Shizuku: " + e);
@@ -282,7 +310,7 @@ public class ScopeApp extends Application {
     if (binding) return;
     binding = true;
     try {
-      if (args != null) Shizuku.unbindUserService(args, connection, true);
+      if (args != null) Shizuku.unbindUserService(args, connection, false);
     } catch (Exception ignored) {
     }
     args =
@@ -296,11 +324,12 @@ public class ScopeApp extends Application {
         () -> {
           if (binding) {
             binding = false;
-            Notices.error(
-                "Helper did not finish connecting",
-                "Check AudioScope authorization in Shevery / Shizuku. Restart the manager's service"
-                    + " and reconnect, or use Embedded ADB.",
-                "settings");
+            if (interactiveShizuku)
+              Notices.error(
+                  "Helper did not finish connecting",
+                  "Check AudioScope authorization in Shevery / Shizuku. Restart the manager's"
+                      + " service and reconnect, or use Embedded ADB.",
+                  "settings");
           }
         },
         12000);
@@ -346,5 +375,26 @@ public class ScopeApp extends Application {
       if (filter.isEmpty() || s.toLowerCase(Locale.US).contains(filter.toLowerCase(Locale.US)))
         b.append(TimeDisplay.log(s)).append('\n');
     return b.toString();
+  }
+
+  public static synchronized String diagnosticHistory() {
+    StringBuilder text = new StringBuilder();
+    for (String name : new String[] {"events.previous.log", "events.log"}) {
+      File file = new File(app.getFilesDir(), name);
+      if (!file.isFile()) continue;
+      text.append("\n").append(name).append("\n");
+      ArrayDeque<String> tail = new ArrayDeque<>();
+      try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+          tail.addLast(line);
+          if (tail.size() > 1500) tail.removeFirst();
+        }
+        for (String savedLine : tail) text.append(TimeDisplay.log(savedLine)).append('\n');
+      } catch (IOException e) {
+        text.append("Log unavailable: ").append(e.getClass().getSimpleName());
+      }
+    }
+    return text.toString();
   }
 }

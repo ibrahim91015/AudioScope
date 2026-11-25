@@ -372,7 +372,7 @@ public class MicRegressionTest extends InstrumentationTestCase {
   public void testHelperCommunicationContinuesAfterHomeAndReportsActualInput() throws Exception {
     activity = foreground("record");
     waitFor(() -> ScopeApp.bridge != null, 12000);
-    assertEquals(4, ScopeApp.bridge.apiVersion());
+    assertEquals(5, ScopeApp.bridge.apiVersion());
     ScopeApp.app.startForegroundService(
         new Intent(ScopeApp.app, CaptureService.class)
             .setAction("RECORD")
@@ -394,7 +394,7 @@ public class MicRegressionTest extends InstrumentationTestCase {
     assertTrue(t.running);
     assertEquals("", t.error);
     assertTrue(t.frames > before + 24000);
-    assertEquals("Capture helper", t.captureBackend);
+    assertEquals("Capture helper · independent file writer", t.captureBackend);
     assertFalse(t.actualPreset.isEmpty());
     assertFalse(t.device.equals("Unknown"));
     Set<String> hidden = SourceLayout.hidden();

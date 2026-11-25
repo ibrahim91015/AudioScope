@@ -45,6 +45,19 @@ public class CaptureService extends Service {
   private long captureWallStart;
   private boolean automaticLabel;
   private boolean carrierCapture;
+  private final BroadcastReceiver screenEvents =
+      new BroadcastReceiver() {
+        public void onReceive(Context c, Intent i) {
+          ScopeApp.log(
+              "INFO",
+              "Screen "
+                  + (Intent.ACTION_SCREEN_OFF.equals(i.getAction()) ? "off" : "on")
+                  + " · recording="
+                  + active()
+                  + " · helper="
+                  + (ScopeApp.bridge != null));
+        }
+      };
 
   private boolean carrierCall() {
     int voice = 0;
@@ -74,6 +87,9 @@ public class CaptureService extends Service {
     super.onCreate();
     instance = this;
     Notices.channels(this);
+    IntentFilter screens = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+    screens.addAction(Intent.ACTION_SCREEN_ON);
+    registerReceiver(screenEvents, screens, Context.RECEIVER_NOT_EXPORTED);
   }
 
   public int onStartCommand(Intent intent, int flags, int id) {
@@ -364,6 +380,17 @@ public class CaptureService extends Service {
       pauseAt = System.nanoTime();
       paused = true;
     }
+    final boolean targetPause = paused;
+    ScopeApp.IO.execute(
+        () -> {
+          ICaptureBridge b = ScopeApp.bridge;
+          if (b != null)
+            try {
+              b.pauseSaved(targetPause);
+            } catch (Exception e) {
+              ScopeApp.log("WARN", "Helper pause: " + ShellBridge.root(e));
+            }
+        });
     ScopeApp.log(
         "INFO", paused ? "Session paused; capture drained, audio discarded" : "Session resumed");
     Notices.event(
@@ -676,6 +703,7 @@ public class CaptureService extends Service {
   }
 
   public void onDestroy() {
+    unregisterReceiver(screenEvents);
     timer.removeCallbacksAndMessages(null);
     unregisterPhone();
     armed = false;
@@ -833,15 +861,39 @@ public class CaptureService extends Service {
             && (!source.phoneMic() && !source.bluetooth() && !source.external() || helperMic)) {
           openedBridge = bridge;
           captureBackend = "Capture helper";
-          pipe =
-              helperMic
-                  ? bridge.openCommunication(
+          if (!monitor) {
+            File output = chooseWavPath();
+            try (ParcelFileDescriptor fd =
+                ParcelFileDescriptor.open(
+                    output,
+                    ParcelFileDescriptor.MODE_CREATE
+                        | ParcelFileDescriptor.MODE_TRUNCATE
+                        | ParcelFileDescriptor.MODE_READ_WRITE)) {
+              pipe =
+                  bridge.openSaved(
+                      source.id,
                       rate,
                       channels,
+                      ScopeApp.prefs().getInt("uidFilter", -1),
+                      helperMic,
                       callAudioActive(),
-                      ScopeApp.prefs().getBoolean("communicationRecovery", true))
-                  : bridge.open(
-                      source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
+                      ScopeApp.prefs().getBoolean("communicationRecovery", true),
+                      fd);
+              helperSaved = true;
+              if (paused) bridge.pauseSaved(true);
+            }
+            captureBackend = "Capture helper · independent file writer";
+          } else {
+            pipe =
+                helperMic
+                    ? bridge.openCommunication(
+                        rate,
+                        channels,
+                        callAudioActive(),
+                        ScopeApp.prefs().getBoolean("communicationRecovery", true))
+                    : bridge.open(
+                        source.id, rate, channels, ScopeApp.prefs().getInt("uidFilter", -1));
+          }
           try (DataInputStream in =
               new DataInputStream(
                   new BufferedInputStream(
@@ -1018,6 +1070,7 @@ public class CaptureService extends Service {
         } catch (Exception e) {
           ScopeApp.log("WARN", "Bluetooth route release: " + ShellBridge.root(e));
         }
+        finishHelper();
         if (pipe != null)
           try {
             pipe.close();
@@ -1033,6 +1086,7 @@ public class CaptureService extends Service {
             consumer.join(5000);
           } catch (Exception ignored) {
           }
+        readHelperResult();
         if (error.isEmpty()) state = "STOPPED";
         if (!monitor)
           ScopeApp.log(
@@ -1049,14 +1103,7 @@ public class CaptureService extends Service {
         consumer.start();
         return;
       }
-      File path = new File(folder, source.id + ".wav");
-      if (path.exists()) {
-        int suffix = 2;
-        while (new File(folder, source.id + "_" + suffix + ".wav").exists()) suffix++;
-        path = new File(folder, source.id + "_" + suffix + ".wav");
-      }
-      wavName = path.getName();
-      wav = new WavFile(path, rate, channels);
+      if (!helperSaved) wav = new WavFile(chooseWavPath(), rate, channels);
       state = "WAITING FOR SIGNAL";
       ScopeApp.log("INFO", source.id + " started • " + rate + " Hz • " + channels + " ch");
       consumer = new Thread(this::consume, "write-" + source.id);
@@ -1097,6 +1144,50 @@ public class CaptureService extends Service {
     }
 
     private String wavName = "";
+    private volatile boolean helperSaved;
+    private volatile JSONObject helperResult;
+
+    private File chooseWavPath() {
+      File path = new File(folder, source.id + ".wav");
+      int suffix = 2;
+      while (path.exists()) path = new File(folder, source.id + "_" + suffix++ + ".wav");
+      wavName = path.getName();
+      return path;
+    }
+
+    private synchronized void finishHelper() {
+      if (!helperSaved || helperResult != null || openedBridge == null) return;
+      try {
+        helperResult = new JSONObject(openedBridge.finishSaved(source.id));
+      } catch (Exception e) {
+        ScopeApp.log("WARN", "Helper finalization: " + ShellBridge.root(e));
+      }
+    }
+
+    private void readHelperResult() {
+      if (!helperSaved || wavName.isEmpty()) return;
+      try {
+        File path = new File(folder, wavName);
+        WavFile.repair(path);
+        frames = Math.max(0, (path.length() - 44) / (channels * 2));
+        if (helperResult != null) {
+          firstNs = helperResult.optLong("firstNs", firstNs);
+          lastNs = helperResult.optLong("lastNs", lastNs);
+          everAudible |= helperResult.optBoolean("everAudible");
+          String failure = helperResult.optString("error");
+          if (!failure.isEmpty()) error = failure;
+        }
+        if (codec.equals("PCM") || ScopeApp.prefs().getBoolean("raw", false))
+          try (InputStream in = new FileInputStream(path);
+              OutputStream out =
+                  new FileOutputStream(new File(folder, wavName.replace(".wav", ".pcm")))) {
+            new DataInputStream(in).readFully(new byte[44]);
+            in.transferTo(out);
+          }
+      } catch (IOException e) {
+        error = ShellBridge.root(e);
+      }
+    }
 
     private void accept(Chunk c) {
       if (!queue.offer(c)) dropped++;
@@ -1107,7 +1198,7 @@ public class CaptureService extends Service {
       byte[] zeros = new byte[8192];
       try (FileWriter stamps = new FileWriter(new File(folder, wavName + ".timestamps.jsonl"));
           OutputStream raw =
-              (codec.equals("PCM") || ScopeApp.prefs().getBoolean("raw", false))
+              (!helperSaved && (codec.equals("PCM") || ScopeApp.prefs().getBoolean("raw", false)))
                   ? new FileOutputStream(new File(folder, wavName.replace(".wav", ".pcm")))
                   : OutputStream.nullOutputStream()) {
         while (reading || !queue.isEmpty()) {
@@ -1147,7 +1238,7 @@ public class CaptureService extends Service {
             long gap = (c.frame - expected) * channels * 2;
             while (gap > 0) {
               int n = (int) Math.min(gap, zeros.length);
-              wav.write(zeros, n);
+              if (!helperSaved) wav.write(zeros, n);
               raw.write(zeros, 0, n);
               frames += n / (channels * 2);
               gap -= n;
@@ -1168,11 +1259,11 @@ public class CaptureService extends Service {
                   + ",\"count\":"
                   + count
                   + "}\n");
-          wav.write(c.data, c.data.length);
+          if (!helperSaved) wav.write(c.data, c.data.length);
           raw.write(c.data);
           frames += count;
           if (now - checkpoint > 5_000_000_000L) {
-            wav.checkpoint();
+            if (!helperSaved) wav.checkpoint();
             stamps.flush();
             checkpoint = now;
           }
@@ -1184,7 +1275,7 @@ public class CaptureService extends Service {
         ScopeApp.log("ERROR", source.id + " writer: " + error);
       } finally {
         try {
-          wav.close();
+          if (wav != null) wav.close();
         } catch (Exception e) {
           error = e.toString();
           state = "FAILED";
@@ -1194,6 +1285,7 @@ public class CaptureService extends Service {
 
     public void stop() {
       running = false;
+      finishHelper();
       if (local != null)
         try {
           local.stop();
@@ -1218,6 +1310,8 @@ public class CaptureService extends Service {
       j.put("title", source.title);
       j.put("file", wavName);
       j.put("codec", codec);
+      j.put("savedByHelper", helperSaved);
+      if (helperResult != null) j.put("helperCapture", helperResult);
       j.put("sampleRate", rate);
       j.put("channels", channels);
       j.put("frames", frames);

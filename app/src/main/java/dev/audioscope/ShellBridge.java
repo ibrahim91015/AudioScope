@@ -16,10 +16,81 @@ public class ShellBridge extends ICaptureBridge.Stub {
   private final Map<String, PlaybackPolicy> policies = new HashMap<>();
   private final Map<String, Pump> pumps = new HashMap<>();
   private final Set<String> pinned = new HashSet<>();
+  private final String processProtection = HelperProcess.detach();
+  private IBinder client;
+  private IBinder.DeathRecipient clientDeath;
+
+  public synchronized void registerClient(IBinder owner) {
+    check();
+    if (client != null && clientDeath != null) client.unlinkToDeath(clientDeath, 0);
+    client = owner;
+    clientDeath =
+        () -> {
+          synchronized (ShellBridge.this) {
+            if (client != owner) return;
+            for (Pump p : pumps.values()) p.stop();
+            pumps.clear();
+            disarm();
+          }
+        };
+    try {
+      owner.linkToDeath(clientDeath, 0);
+    } catch (RemoteException e) {
+      clientDeath.binderDied();
+    }
+  }
+
+  public synchronized ParcelFileDescriptor openSaved(
+      String id,
+      int rate,
+      int channels,
+      int uid,
+      boolean communication,
+      boolean callActive,
+      boolean recover,
+      ParcelFileDescriptor output) {
+    check();
+    try {
+      return communication
+          ? openCommunicationInternal(rate, channels, callActive, recover, output)
+          : openInternal(id, rate, channels, uid, output);
+    } catch (RuntimeException e) {
+      try {
+        output.close();
+      } catch (IOException ignored) {
+      }
+      throw e;
+    }
+  }
+
+  public synchronized String finishSaved(String id) {
+    check();
+    Pump p = pumps.get(id);
+    if (p == null) return "{}";
+    p.stop();
+    String result;
+    try {
+      result = p.describe().toString();
+    } catch (Exception e) {
+      result = "{}";
+    }
+    pumps.remove(id);
+    if (!pinned.contains(id)) {
+      PlaybackPolicy policy = policies.remove(id);
+      if (policy != null) policy.close();
+    }
+    return result;
+  }
+
+  public synchronized void pauseSaved(boolean paused) {
+    check();
+    long now = System.nanoTime();
+    for (Pump p : pumps.values()) if (p.saved != null) p.saved.pause(paused, now);
+  }
 
   public int apiVersion() {
     check();
-    return 4;
+    return 5;
   }
 
   private final int allowedUid;
@@ -27,6 +98,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
   public synchronized String systemSetup(String action, String value) {
     check();
     long identity = Binder.clearCallingIdentity();
+    long workSource = Binder.clearCallingWorkSource();
     try {
       if (!action.equals("READ")) {
         if (pumps.values().stream().anyMatch(p -> p.active))
@@ -41,10 +113,16 @@ public class ShellBridge extends ICaptureBridge.Stub {
           runSystem(new String[] {"settings", "get", "global", "adb_wifi_enabled"}).trim());
       result.put("usbMode", SystemSetupPolicy.usbMode(runSystem(new String[] {"dumpsys", "usb"})));
       result.put("tcpPort", runSystem(new String[] {"getprop", "service.adb.tcp.port"}).trim());
+      result.put(
+          "authorizationTimeout",
+          runSystem(new String[] {"settings", "get", "global", "adb_allowed_connection_time"})
+              .trim());
+      result.put("adbd", runSystem(new String[] {"getprop", "init.svc.adbd"}).trim());
       return result.toString();
     } catch (Throwable e) {
       throw new IllegalStateException(root(e));
     } finally {
+      Binder.restoreCallingWorkSource(workSource);
       Binder.restoreCallingIdentity(identity);
     }
   }
@@ -118,6 +196,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
   public synchronized String arm(String id, int rate, int channels, int uid) {
     check();
     long identity = Binder.clearCallingIdentity();
+    long workSource = Binder.clearCallingWorkSource();
     try {
       Source s = Source.get(id);
       if (!s.playback()) return "Input sources open on Record";
@@ -128,6 +207,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
     } catch (Throwable e) {
       return "FAILED • " + root(e);
     } finally {
+      Binder.restoreCallingWorkSource(workSource);
       Binder.restoreCallingIdentity(identity);
     }
   }
@@ -136,12 +216,19 @@ public class ShellBridge extends ICaptureBridge.Stub {
       "MissingPermission") // Runs as shell/root; Android enforces privilege and all failures are
   // reported.
   public synchronized ParcelFileDescriptor open(String id, int rate, int channels, int uid) {
+    return openInternal(id, rate, channels, uid, null);
+  }
+
+  @android.annotation.SuppressLint("MissingPermission")
+  private ParcelFileDescriptor openInternal(
+      String id, int rate, int channels, int uid, ParcelFileDescriptor output) {
     check();
     if (pumps.containsKey(id)) {
       if (pumps.get(id).active) throw new IllegalStateException("Source already recording");
       pumps.remove(id);
     }
     long identity = Binder.clearCallingIdentity();
+    long workSource = Binder.clearCallingWorkSource();
     try {
       Source s = Source.get(id);
       AudioRecord record;
@@ -160,12 +247,14 @@ public class ShellBridge extends ICaptureBridge.Stub {
         throw new IllegalStateException("AudioRecord did not initialize");
       }
       ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createReliablePipe();
-      Pump p = new Pump(record, pipe[1]);
+      Pump p = null;
       try {
+        p = new Pump(record, pipe[1], output);
         p.start();
         pumps.put(id, p);
         return pipe[0];
       } catch (Throwable e) {
+        if (p != null && p.saved != null) p.saved.close();
         record.release();
         pipe[0].close();
         pipe[1].close();
@@ -174,6 +263,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
     } catch (Throwable e) {
       throw new IllegalStateException(root(e));
     } finally {
+      Binder.restoreCallingWorkSource(workSource);
       Binder.restoreCallingIdentity(identity);
     }
   }
@@ -210,9 +300,14 @@ public class ShellBridge extends ICaptureBridge.Stub {
 
   public synchronized ParcelFileDescriptor openCommunication(
       int rate, int channels, boolean callActive, boolean recover) {
+    return openCommunicationInternal(rate, channels, callActive, recover, null);
+  }
+
+  private ParcelFileDescriptor openCommunicationInternal(
+      int rate, int channels, boolean callActive, boolean recover, ParcelFileDescriptor output) {
     check();
     try {
-      ParcelFileDescriptor fd = open("communication_input", rate, channels, -1);
+      ParcelFileDescriptor fd = openInternal("communication_input", rate, channels, -1, output);
       Pump p = pumps.get("communication_input");
       p.communication = true;
       p.callActive = callActive;
@@ -222,19 +317,22 @@ public class ShellBridge extends ICaptureBridge.Stub {
       Pump old = pumps.get("communication_input");
       if (!recover || !callActive || old != null && old.active) throw e;
       long identity = Binder.clearCallingIdentity();
+      long workSource = Binder.clearCallingWorkSource();
       try {
         AudioRecord record = inputRecord(1, rate, channels);
         ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createReliablePipe();
-        Pump p = new Pump(record, pipe[1]);
-        p.communication = true;
-        p.callActive = true;
-        p.recover = true;
-        p.note = "Communication preset could not open; using call-safe helper MIC";
+        Pump p = null;
         try {
+          p = new Pump(record, pipe[1], output);
+          p.communication = true;
+          p.callActive = true;
+          p.recover = true;
+          p.note = "Communication preset could not open; using call-safe helper MIC";
           p.start();
           pumps.put("communication_input", p);
           return pipe[0];
         } catch (Throwable failure) {
+          if (p != null && p.saved != null) p.saved.close();
           record.release();
           pipe[0].close();
           pipe[1].close();
@@ -243,6 +341,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
       } catch (Throwable failure) {
         throw new IllegalStateException(root(failure));
       } finally {
+        Binder.restoreCallingWorkSource(workSource);
         Binder.restoreCallingIdentity(identity);
       }
     }
@@ -251,6 +350,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
   public synchronized String sourceStatus(String id, boolean callActive) {
     check();
     long identity = Binder.clearCallingIdentity();
+    long workSource = Binder.clearCallingWorkSource();
     try {
       Pump p = pumps.get(id);
       if (p == null) return "{}";
@@ -259,6 +359,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
     } catch (Exception e) {
       return "{}";
     } finally {
+      Binder.restoreCallingWorkSource(workSource);
       Binder.restoreCallingIdentity(identity);
     }
   }
@@ -285,11 +386,15 @@ public class ShellBridge extends ICaptureBridge.Stub {
   public synchronized String inspect() {
     check();
     long identity = Binder.clearCallingIdentity();
+    long workSource = Binder.clearCallingWorkSource();
     try {
       JSONObject j = new JSONObject();
       j.put("uid", android.os.Process.myUid());
       j.put("pid", android.os.Process.myPid());
       j.put("armed", new JSONArray(policies.keySet()));
+      j.put("processProtection", processProtection);
+      j.put("cgroups", HelperProcess.groups());
+      j.put("api", 5);
       JSONObject running = new JSONObject();
       for (Map.Entry<String, Pump> e : pumps.entrySet())
         running.put(e.getKey(), e.getValue().describe());
@@ -310,13 +415,16 @@ public class ShellBridge extends ICaptureBridge.Stub {
             "MODIFY_AUDIO_ROUTING"
           })
         try {
-          perms.put(
-              p,
-              (Integer)
-                      pm.getClass()
-                          .getMethod("checkUidPermission", String.class, int.class)
-                          .invoke(pm, "android.permission." + p, android.os.Process.myUid())
-                  == 0);
+          Method permission = null;
+          for (Method m : pm.getClass().getMethods())
+            if (m.getName().equals("checkUidPermission")
+                && (m.getParameterCount() == 2 || m.getParameterCount() == 3)) permission = m;
+          if (permission == null) throw new NoSuchMethodException("checkUidPermission");
+          Object result =
+              permission.getParameterCount() == 3
+                  ? permission.invoke(pm, "android.permission." + p, android.os.Process.myUid(), 0)
+                  : permission.invoke(pm, "android.permission." + p, android.os.Process.myUid());
+          perms.put(p, ((Integer) result) == 0);
         } catch (Exception e) {
           perms.put(p, "unknown: " + root(e));
         }
@@ -326,6 +434,7 @@ public class ShellBridge extends ICaptureBridge.Stub {
     } catch (Throwable e) {
       return "Inspection failed: " + root(e);
     } finally {
+      Binder.restoreCallingWorkSource(workSource);
       Binder.restoreCallingIdentity(identity);
     }
   }
@@ -386,13 +495,20 @@ public class ShellBridge extends ICaptureBridge.Stub {
     volatile long dropped, frames;
     volatile String error = "";
     Thread reader, writer;
+    final PcmWaveSink saved;
+    volatile boolean pipeAvailable = true;
 
-    Pump(AudioRecord r, ParcelFileDescriptor f) {
+    Pump(AudioRecord r, ParcelFileDescriptor f, ParcelFileDescriptor output) throws IOException {
       record = r;
       rate = r.getSampleRate();
       channels = r.getChannelCount();
       preset = r.getAudioSource();
       fd = f;
+      saved =
+          output == null
+              ? null
+              : new PcmWaveSink(
+                  new ParcelFileDescriptor.AutoCloseOutputStream(output), rate, channels);
     }
 
     void start() {
@@ -460,13 +576,28 @@ public class ShellBridge extends ICaptureBridge.Stub {
                         == AudioRecord.SUCCESS)
                       time =
                           ts.nanoTime + (first - frameBase - ts.framePosition) * 1000000000L / rate;
-                    Packet p = new Packet(Arrays.copyOf(b, n), time, first);
-                    if (!queue.offer(p)) dropped++;
+                    if (saved != null) saved.write(b, n, time);
+                    if (pipeAvailable) {
+                      Packet p = new Packet(Arrays.copyOf(b, n), time, first);
+                      if (!queue.offer(p)) dropped++;
+                    }
                   }
                 } catch (Throwable e) {
                   error = root(e);
                 } finally {
                   active = false;
+                  if (saved != null) {
+                    try {
+                      saved.close();
+                    } catch (IOException e) {
+                      error = root(e);
+                    }
+                  }
+                  try {
+                    record.stop();
+                  } catch (Exception ignored) {
+                  }
+                  record.release();
                 }
               },
               "capture-reader");
@@ -491,14 +622,18 @@ public class ShellBridge extends ICaptureBridge.Stub {
                     out.flush();
                   }
                 } catch (Throwable e) {
-                  error = root(e);
+                  if (saved == null && active) error = root(e);
                 } finally {
-                  active = false;
-                  try {
-                    record.stop();
-                  } catch (Exception ignored) {
+                  pipeAvailable = false;
+                  queue.clear();
+                  // A frozen/dead UI pipe must never stop independently saved audio.
+                  if (saved == null) {
+                    active = false;
+                    try {
+                      record.stop();
+                    } catch (Exception ignored) {
+                    }
                   }
-                  record.release();
                 }
               },
               "capture-pipe");
@@ -513,8 +648,8 @@ public class ShellBridge extends ICaptureBridge.Stub {
       } catch (Exception ignored) {
       }
       try {
-        reader.join(1500);
-        writer.join(2000);
+        reader.join(5000);
+        writer.join(500);
         if (writer.isAlive()) fd.close();
       } catch (Exception ignored) {
       }
@@ -523,6 +658,13 @@ public class ShellBridge extends ICaptureBridge.Stub {
     JSONObject describe() throws JSONException {
       JSONObject j = new JSONObject();
       j.put("frames", frames);
+      j.put("savedByHelper", saved != null);
+      if (saved != null) {
+        j.put("savedFrames", saved.frames());
+        j.put("firstNs", saved.firstNs());
+        j.put("lastNs", saved.lastNs());
+        j.put("everAudible", saved.audible());
+      }
       j.put("queue_dropped", dropped);
       j.put("error", error);
       j.put("active", active);

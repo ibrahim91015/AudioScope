@@ -9,11 +9,15 @@ import java.util.function.IntConsumer;
 
 /** Resolve only services belonging to this phone, never a neighboring ADB device. */
 public final class AdbDiscovery {
+  // Android allows only one legacy resolve at a time, including across pairing/connect searches.
+  private static final ArrayDeque<Runnable> RESOLVES = new ArrayDeque<>();
+  private static boolean globalResolving;
   private final NsdManager manager;
   private final String type;
   private final IntConsumer found;
   private final ArrayDeque<NsdServiceInfo> queue = new ArrayDeque<>();
-  private boolean resolving, closed;
+  private boolean resolving;
+  private volatile boolean closed;
   private final NsdManager.DiscoveryListener listener =
       new NsdManager.DiscoveryListener() {
         public void onDiscoveryStarted(String t) {
@@ -31,7 +35,7 @@ public final class AdbDiscovery {
         public void onServiceLost(NsdServiceInfo s) {}
 
         public void onServiceFound(NsdServiceInfo info) {
-          ScopeApp.log("INFO", "ADB service found: " + info.getServiceName());
+          ScopeApp.log("INFO", "Local ADB service advertised for " + type);
           synchronized (queue) {
             if (closed) return;
             queue.add(info);
@@ -47,7 +51,55 @@ public final class AdbDiscovery {
   }
 
   public void start() {
-    manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener);
+    if (closed) return;
+    try {
+      manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener);
+    } catch (RuntimeException e) {
+      ScopeApp.log("WARN", "ADB discovery: " + e.getClass().getSimpleName());
+    }
+  }
+
+  private static void scheduleResolve(Runnable work) {
+    ScopeApp.MAIN.post(
+        () -> {
+          RESOLVES.add(work);
+          nextResolve();
+        });
+  }
+
+  private static void nextResolve() {
+    if (globalResolving || RESOLVES.isEmpty()) return;
+    globalResolving = true;
+    RESOLVES.remove().run();
+  }
+
+  private static void resolved() {
+    ScopeApp.MAIN.post(
+        () -> {
+          globalResolving = false;
+          nextResolve();
+        });
+  }
+
+  static int findConnection(Context context, long timeoutMs) throws InterruptedException {
+    java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicInteger port =
+        new java.util.concurrent.atomic.AtomicInteger();
+    AdbDiscovery discovery =
+        new AdbDiscovery(
+            context,
+            "_adb-tls-connect._tcp",
+            p -> {
+              port.set(p);
+              ready.countDown();
+            });
+    ScopeApp.MAIN.post(discovery::start);
+    try {
+      ready.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    } finally {
+      discovery.stop();
+    }
+    return port.get();
   }
 
   @SuppressWarnings("deprecation")
@@ -56,28 +108,46 @@ public final class AdbDiscovery {
       if (closed || resolving || queue.isEmpty()) return;
       resolving = true;
       NsdServiceInfo info = queue.remove();
-      manager.resolveService(
-          info,
-          new NsdManager.ResolveListener() {
-            public void onResolveFailed(NsdServiceInfo s, int e) {
-              complete();
+      scheduleResolve(
+          () -> {
+            if (closed) {
+              resolved();
+              return;
             }
+            NsdManager.ResolveListener callback =
+                new NsdManager.ResolveListener() {
+                  private final java.util.concurrent.atomic.AtomicBoolean done =
+                      new java.util.concurrent.atomic.AtomicBoolean();
 
-            public void onServiceResolved(NsdServiceInfo s) {
-              if (!closed && local(s))
-                ScopeApp.MAIN.post(
-                    () -> {
-                      if (!closed) found.accept(s.getPort());
-                    });
-              complete();
-            }
+                  public void onResolveFailed(NsdServiceInfo s, int e) {
+                    complete();
+                  }
 
-            private void complete() {
-              synchronized (queue) {
-                resolving = false;
-              }
-              resolveNext();
+                  public void onServiceResolved(NsdServiceInfo s) {
+                    if (done.get()) return;
+                    if (!closed && local(s))
+                      ScopeApp.MAIN.post(
+                          () -> {
+                            if (!closed) found.accept(s.getPort());
+                          });
+                    complete();
+                  }
+
+                  private void complete() {
+                    if (!done.compareAndSet(false, true)) return;
+                    synchronized (queue) {
+                      resolving = false;
+                    }
+                    resolveNext();
+                    resolved();
+                  }
+                };
+            try {
+              manager.resolveService(info, callback);
+            } catch (RuntimeException e) {
+              callback.onResolveFailed(info, -1);
             }
+            ScopeApp.MAIN.postDelayed(() -> callback.onResolveFailed(info, -2), 10000);
           });
     }
   }

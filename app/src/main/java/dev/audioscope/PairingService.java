@@ -10,6 +10,7 @@ import android.provider.Settings;
 
 public final class PairingService extends Service {
   public static final int ID = 61;
+  public static volatile boolean running;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private AdbDiscovery pairing, connection;
   private ContentObserver observer;
@@ -22,6 +23,7 @@ public final class PairingService extends Service {
 
   public void onCreate() {
     super.onCreate();
+    running = true;
     Notices.channels(this);
   }
 
@@ -61,12 +63,44 @@ public final class PairingService extends Service {
     observer =
         new ContentObserver(handler) {
           public void onChange(boolean self) {
-            if (wirelessEnabled()) discover();
+            discover();
           }
         };
-    getContentResolver()
-        .registerContentObserver(Settings.Global.getUriFor("adb_wifi_enabled"), false, observer);
-    if (wirelessEnabled()) discover();
+    try {
+      getContentResolver()
+          .registerContentObserver(Settings.Global.getUriFor("adb_wifi_enabled"), false, observer);
+    } catch (SecurityException e) {
+      ScopeApp.log("INFO", "Android hides debugging state; discovery will still run");
+      observer = null;
+    }
+    discover();
+    if (connectOnly) {
+      busy = true;
+      ScopeApp.IO.execute(
+          () -> {
+            try {
+              EmbeddedAdb.reconnectBlocking();
+              handler.post(
+                  () -> {
+                    if (cancelled) return;
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    stopSelf();
+                  });
+            } catch (Exception e) {
+              handler.post(
+                  () -> {
+                    if (cancelled) return;
+                    busy = false;
+                    show(
+                        "Pairing retained · waiting for a connection",
+                        "Enable Wireless debugging on Wi-Fi. A new code is unnecessary unless"
+                            + " Android rejected your key.",
+                        false);
+                    if (connectPort > 0) connect();
+                  });
+            }
+          });
+    }
     handler.postDelayed(
         () -> {
           if (!cancelled) {
@@ -148,6 +182,7 @@ public final class PairingService extends Service {
           try {
             if (!EmbeddedAdb.get().pair("127.0.0.1", port, code))
               throw new IllegalStateException("Android rejected the pairing code");
+            EmbeddedAdb.paired();
             handler.post(
                 () -> {
                   if (cancelled) return;
@@ -196,8 +231,9 @@ public final class PairingService extends Service {
                   if (cancelled) return;
                   Notices.event(
                       "Offline helper connected",
-                      "Recording now uses the on-device helper. Wi-Fi is no longer required for"
-                          + " capture. Reconnect after reboot.",
+                      "The saved pairing identity is reused after app restarts. Recording uses the"
+                          + " on-device helper; reconnecting after reboot may need Wi-Fi and"
+                          + " Wireless debugging.",
                       "settings");
                   stopForeground(STOP_FOREGROUND_REMOVE);
                   stopSelf();
@@ -262,6 +298,7 @@ public final class PairingService extends Service {
 
   public void onDestroy() {
     cancelled = true;
+    running = false;
     handler.removeCallbacksAndMessages(null);
     if (pairing != null) pairing.stop();
     if (connection != null) connection.stop();
